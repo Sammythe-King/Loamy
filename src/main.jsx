@@ -4,7 +4,7 @@ import Dashboard from './Dashboard.jsx'
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Login from './Login.jsx'
-import LoamyHomePage from './LoamyHomePage.jsx';
+// import LoamyHomePage from './LoamyHomePage.jsx';
 import './index.css'
 import SignUp from './SignUp'
 import ProgressBar from './ProgressBar.jsx';
@@ -12,14 +12,14 @@ import ProgressBar from './ProgressBar.jsx';
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <LoamyHomePage/>
+    {/* <LoamyHomePage/> */}
     {/* <ProgressBar value={40} /> */}
-     {/* <BrowserRouter>
+     <BrowserRouter>
      <Routes>
          <Route path="/" element={<Login />} />
          <Route path="/signup" element={<SignUp />} />
          <Route path="/dashboard" element={<Dashboard />} />
        </Routes>
-     </BrowserRouter> */}
+     </BrowserRouter>
   </StrictMode>,
 )
