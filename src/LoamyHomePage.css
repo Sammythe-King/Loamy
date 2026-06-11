@@ -1,79 +1,568 @@
-.loamyfunc{
-    display: grid;
-    grid-template-columns: repeat(3,1fr);
-    margin: 0px 50px;
+/* @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap'); */
 
-
+body {
+  font-family: 'Inter', sans-serif !important;
 }
-.loamyfuncSub{
-    background-color: white;
-    /* object-fit: contain !important; */
-    margin: 5px;
-    border-radius:20px;
-    /* width: 9px;0%; */
 
-    
+h1, h2, h3, h4, span {
+  font-family: 'Plus Jakarta Sans', sans-serif !important;
 }
-.loamyfuncSub h4{
-    text-align: left !important;
+h1,h2,h3,h4{
+    color: #11260c;
+}
+span{
+    color: #5b8e42;
+}
+
+
+.ogaLoamyLandging{
+    /* font-style: "Cormorant Garamond" !important; */
+    /* background:radial-gradient(red,green); */
+}
+
+.TheLandNav{
+    display: flex;
+    justify-content:space-around;
+    background-color: #48662a;
+    color: white;
+    padding:5px;
+    margin: 0 50px;
+    border-radius: 30px;
+    position: sticky;
+    z-index: 1;
+    top:14px;
+
+    /* display: ; */
+}
+.navsubssbsbdbdb{
+    gap: 20px;
+    /* justify-content: space-around; */
+}
+.FirstoneSection{
+    display: flex;
+    margin: 10% ;
     position: relative;
-    left: 10%;
+    top:50px;
+   
+    /* left: 50px; */
+  
 }
-.loamyfuncSub p{
-    width:80%;
-    text-align: left !important;
-   position: relative;
-   left: 10%;
+.SubsssFirstoneSection{
+    position: relative;
+      /* top: 80px; */
 }
-.homePnav{
-     background-color: green;
-     color: white;
-     padding: 20px;
-     border-radius:30px;
+.SubsssFirstoneSection h2{
+    font-size: 60px
 }
-.homePnav span{
-    /* margin: 0px 10px; */
+.SubsssFirstoneSection h2 span{
+    /* color: #174f0a; */
 }
-.heroFinance button{
-    padding:15px 40px;
-    border-radius: 12px;
+.SubsssFirstoneSection p{
+    font-weight: 300;
+}
+.sssdFirstoneSectionButtons button{
+    font-size: 15px;
     border: none;
-    /* background: none; */
+    padding: 10px 20px;
+    border-radius:20px;
+    margin: 0 10px;
+    /* background-color:; */
+    /* color: white; */
 }
-.thridHero{
-    text-align: left;
-     position: relative;
-    left: 31%;
-    top: 40px;
-    margin:5% 0;
-    background-color: white;
-   width: 45%;
-   border-radius: 20px;
-   padding: 20px 10px;
-}
-.thridHeroSub1{
-    text-align: left;
+.sssdFirstoneSectionsmall{
+    font-size: 12px;
+   position: relative;
+   top: 20px;
    
 }
-.subthirdHero{
-    padding: 20px;
-    text-wrap: nowrap;
-    background-color: rgba(128, 128, 128, 0.082);
+
+.SecondoneSection{
+    align-items: center;
+    /* margin: 15px 0; */
+    text-align: center;
+   
+   
+}
+.sub-SecondoneSection-111{
+    position: relative;
+   top: 40px;
+   background-color: white;
+   border-radius: 20px;
+    padding: 10px 40px;
+    padding-top: 30px;
+    
+}
+.secondSectionIcon{
+    background-color: #48662a;
+    padding:10px 13px;
+    border-radius: 50%;
     margin: 10px 0;
+    color: white;
+}
+.sub-SecondoneSection-111 h4{
+    font-weight:400;
+}
+.Sub-SecondoneSection{
+    display: flex;
+    gap: 40px;
+    position: relative;
+   
+    justify-content: center;
+    margin-bottom:10%;
+    /* display: grid; */
+    /* grid-template-columns: repeat(3,1fr); */
+}
+.Sub-SecondoneSection p{
+    font-size: 16px;
+    /* width: 90%; */
+}
+.worksiconss{
+    background-color: #48662a;
+    padding: 10px 15px;
+    color: white;
+    border-radius: 50%;
+   
+}
+
+.Workssubsss{
+    background-color:#768E42;
+    color: white;
+    border-radius: 20px;
+    box-shadow: 0 12px 20px rgba(0, 0, 0, 0.145);
+    display: inline-block;
+     padding:10px;
+}
+.ThirdoneSection{
+    margin: 0 80px;
+}
+.Sub-ThirdoneSection{
+    text-align: start;
+}
+.Sub-ThirdoneSection{
+    display: grid;
+    grid-template-columns: repeat(3,1fr);
+    margin-bottom: 15%;
+    position: relative;
+    top: 50px;
+}
+.SubssofThirdoneSection{
+    margin: 10px ;
+    background-color: #768E42;
+    color: white;
+    border-radius: 20px;
+    padding: 20px;
+   
+}
+.SubssThirddssIcon{
+    background-color:#48662a;
+     width:20px;
+     padding:10px 20px;
+     border-radius:50%;
+    
+}
+
+.FourthoneSection{
+    display: flex;
+    margin-bottom: 15%;
+    
+}
+
+.lastfooter{
+    display: flex;
+    margin-bottom: 10%;
+}
+.FourthoneSection{
+    margin: 80px 120px;
+    text-align: start;
+    position: relative;
+    left: 70px;
+    top: 80px;
+}
+.Min-FourthoneSection{
+    font-size: 12px;
+    font-weight: 400;
+   
+    display: inline-block;
+    border-radius: 20px;
+    
+}
+.lovedsffpp{
+    width:40% !important;
+}
+.ForBusness{
+    padding: 15px;
+    background-color: #768E42;
+    color: white;
+    margin: 4px;
     border-radius: 20px;
 }
-.LoamyWorks p{
-    width: 80%;
+.ForBusness span{
+    color: white;
+}
+.beforethefootdec{
+    background-image: url(./assets/patterns.jpg);
+    margin: 15%;
+    padding: 40px;
+    border-radius: 50px;
+    color: white;
+}
+.beforethefootdec p{
+    font-size: 50px;
+}
+.bffoobtnsec button{
+    padding: 15px;
+    border: none;
+    border-radius: 20px;
+}
+.lastfooter{
+    margin: 10% ;
+}
+.lastfooter li{
+    margin: 15px 0;
+    font-weight: 300;
+}
+.MobileNav{
+    display: none;
+}
+@media (min-width:200px ) and (max-width:700px){
+.TheLandNav{
+    display: none;
+}
+.firstspanofsfjfns{
+    font-size: 15px;
+}
+.SubsssFirstoneSection h2{
+    font-size:40px !important;
+    
+}
+.SubsssFirstoneSection p{
+    width: 100% !important;
+    font-size: 20px;
+    line-height: 30px !important;
+    /* text-align: left; */
+}
+
+.FirstoneSection{
+    flex-direction: column;
+}
+.sssdFirstoneSectionButtons  button{
+    margin:10px 5px;
+    padding:20px 50px;
+    
+}
+.sssdFirstoneSectionsmall span{
+    font-size: 15px;
+    width: 40%;
+    line-height:30px;
+}
+.FirstoneSection{
+    margin:5%;
+    margin-bottom:60% !important;
+
+}
+.FirstoneSection img{
+    width:100% !important;
+      position: relative !important;
+    left:-1px !important;
+    top:40px !important;
+
+}
+.topimghime{
+  
+}
+.SecondoneSection{
+    margin: 30% 0 !important;
+}
+.SecondoneSection span{
+    /* width:20% !important; */
+}
+.Sub-SecondoneSection{
+    display:inline-block;
+    flex-direction: column;
+    width: 90%;
+
+    /* grid-template-columns: repeat(2, 1fr); */ 
+}
+.Sub-SecondoneSection h4{
+    font-size: 20px;
+}
+.sub-SecondoneSection-111{
+    margin-bottom: 30px !important;
     position: relative;
-    left:10%;
-   /* flex-basis: 80% !important; */
+    /* left:-20px; */
 }
-.LoamyWorks h4{
-    font-size:35px;
-    margin:10px;
-    opacity: 0.2;
-    color: green;
+.Workssubsss{
+     margin-bottom: 30px !important;
 }
-.LoamyWorks h5{
-    margin: 0;
+.SecondoneSection .Workssubsss{
+    position: relative;
+    left:-40px;
+}
+.finacbrain{
+    font-size: 30px !important;
+    /* width: 100% !important; */
+}
+.ThirdoneSection{
+    margin:80% 0 !important;
+    
+}
+.minfitstsubThirdoneSection{
+    position: relative;
+    left:15px !important;
+}
+.Sub-ThirdoneSection{
+    display: grid;
+    grid-template-columns: repeat(1,1fr) !important;
+}
+.SubssofThirdoneSection img{
+    margin: 10px 0;
+    position: relative;
+    left: -20px;
+}
+.SubssofThirdoneSection h4{
+    font-size:25px;
+}
+.SubssofThirdoneSection p{
+    font-size: 20px;
+}
+.FourthoneSection{
+    flex-direction: column;
+    position: relative;
+    left:-30px !important;
+}
+.minFourthoneSection{
+    position: relative !important;
+
+    left:-70px !important;
+}
+.minFourthoneSection p{
+    width: 90vw !important;
+}
+.minFourthoneSectionfirstp{
+font-size: 35px !important;
+}
+.Min-FourthoneSection span{
+    margin: 0px !important;
+    display: inline-block;
+    text-wrap: nowrap;
+}
+
+.minfourtlats{
+    top: 20px !important;
+}
+.minfffourtlats{
+    position: relative;
+    top: 10px;
+}
+.lovedsffpp{
+    width:100% !important;
+}
+.FourthoneSection img{
+        position: relative;
+        left: -90px !important;
+        width: 95vw !important;
+        top: 50px;
+}
+.lovedsff{
+    margin: 40% 5% !important;
+}
+.lovedsfffff{
+    display: flex;
+    flex-direction: column;
+}
+.lovedsffffficn{
+    padding:5% 9% !important;
+    font-size:25px;
+}
+.beforethefootdec{
+    margin:40% 0 !important;
+}
+.beforethefootdecnote{
+    width: 100% !important;
+    margin-bottom: 50px;
+}
+.lastfooter{
+    flex-direction: column;
+    position: relative;
+    left: 20px;
+}
+.lastfooter{
+    display: inline;
+}
+.minghlastfooter{
+    flex-direction: column;
+    left: 0 !important;
+    margin: 20px 0;
+}
+.lastlastlastfooter{
+    flex-direction:column ;
+    /* justify-content:space-between !important; */
+}
+.countrirs{
+    position: relative;
+    display: none;
+    /* left:-90px; */
+}
+/* ...existing code... */
+
+/* Mobile nav styles */
+.MobileNav{
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    background: #48662a;
+    color: #fff;
+    padding: 10px 16px;
+    margin: 0 16px;
+    border-radius: 16px;
+    position: sticky;
+    top: 14px;
+    z-index: 40;
+}
+
+/* brand and toggle */
+.MobileNav .mobileBrand{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    font-weight:600;
+}
+.MobileNav .mobileToggle{
+    background: transparent;
+    border: none;
+    color: white;
+    font-size: 20px;
+    display:flex;
+    align-items:center;
+    cursor: pointer;
+}
+
+/* hidden menu panel */
+.MobileNav .mobileMenu{
+    position: absolute;
+    top: 64px;
+    right: 16px;
+    background: rgba(72,102,42,0.98);
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+    display: none;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    width: 220px;
+}
+
+/* show when open */
+.MobileNav .mobileMenu.open{
+    display: flex;
+}
+
+/* links */
+.MobileNav .mobileMenu a{
+    color: white;
+    text-decoration: none;
+    padding: 8px 6px;
+    border-radius: 8px;
+}
+.MobileNav .mobileMenu a:hover{
+    background: rgba(255,255,255,0.06);
+}
+.MobileNav .mobileMenu .mobileCTA{
+    margin-top: 6px;
+    background: white;
+    color: #48662a;
+    border: none;
+    padding: 10px;
+    border-radius: 10px;
+    cursor: pointer;
+}
+
+/* show mobile nav and hide desktop nav on small screens */
+@media (max-width: 700px){
+    .TheLandNav{ display: none !important; }
+    .MobileNav{ display: flex !important; }
+    /* ensure menu covers if open */
+    .MobileNav .mobileMenu{ right: 8px; left: 8px; top: 56px; width: auto; }
+}
+
+
+/* Mobile nav styles */
+.MobileNav{
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    background: #48662a;
+    color: #fff;
+    padding: 10px 16px;
+    margin: 0 16px;
+    border-radius: 16px;
+    position: sticky;
+    top: 14px;
+    z-index: 40;
+}
+
+/* brand and toggle */
+.MobileNav .mobileBrand{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    font-weight:600;
+}
+.MobileNav .mobileToggle{
+    background: transparent;
+    border: none;
+    color: white;
+    font-size: 20px;
+    display:flex;
+    align-items:center;
+    cursor: pointer;
+}
+
+/* hidden menu panel */
+.MobileNav .mobileMenu{
+    position: absolute;
+    top: 64px;
+    right: 16px;
+    background: rgba(72,102,42,0.98);
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+    display: none;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    width: 220px;
+}
+
+/* show when open */
+.MobileNav .mobileMenu.open{
+    display: flex;
+}
+
+/* links */
+.MobileNav .mobileMenu a{
+    color: white;
+    text-decoration: none;
+    padding: 8px 6px;
+    border-radius: 8px;
+}
+.MobileNav .mobileMenu a:hover{
+    background: rgba(255,255,255,0.06);
+}
+.MobileNav .mobileMenu .mobileCTA{
+    margin-top: 6px;
+    background: white;
+    color: #48662a;
+    border: none;
+    padding: 10px;
+    border-radius: 10px;
+    cursor: pointer;
+}
+
+/* show mobile nav and hide desktop nav on small screens */
+@media (max-width: 700px){
+    .TheLandNav{ display: none !important; }
+    .MobileNav{ display: flex !important; }
+    /* ensure menu covers if open */
+    .MobileNav .mobileMenu{ right: 8px; left: 8px; top: 56px; width: auto; }
+}
 }

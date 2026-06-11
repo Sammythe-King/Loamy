@@ -12,14 +12,14 @@ import ProgressBar from './ProgressBar.jsx';
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    {/* <LoamyHomePage/> */}
+    <LoamyHomePage/>
     {/* <ProgressBar value={40} /> */}
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Login />} />
-        <Route path="/signup" element={<SignUp />} />
-        <Route path="/dashboard" element={<Dashboard />} />
-      </Routes>
-    </BrowserRouter>
+     {/* <BrowserRouter>
+     <Routes>
+         <Route path="/" element={<Login />} />
+         <Route path="/signup" element={<SignUp />} />
+         <Route path="/dashboard" element={<Dashboard />} />
+       </Routes>
+     </BrowserRouter> */}
   </StrictMode>,
 )

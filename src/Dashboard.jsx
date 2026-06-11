@@ -8,6 +8,8 @@ import { faGoogleWallet } from "@fortawesome/free-brands-svg-icons";
 import ProgressBar from  './ProgressBar'
 import dashboardData from "./DahboardData";
 import { useNavigate } from "react-router-dom";
+import {FaWallet} from "react-icons/fa";
+// import {Wallet} from '@heroicons/react/24/solid';
 
 
 

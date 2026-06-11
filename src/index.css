@@ -1,6 +1,10 @@
+/* @import "tailwindcss"; */
 body{
-  font-family: "Poppins", sans-serif;
-  background-color: #bfbf9c35;
+  /* font-family: "Poppins", sans-serif; */
+  background-color: hsla(60, 21%, 68%, 0.208);
+}
+.ogaLoamyLandging{
+  /* overflow-x: hidden; */
 }
 .Loginform input{
   padding: 10px ;
