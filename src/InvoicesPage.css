@@ -1,0 +1,433 @@
+.invoices-page {
+  display: flex;
+  min-height: 100vh;
+  font-family: "Poppins", sans-serif;
+  background-color: #FAF6F1;
+}
+
+/* Sidebar */
+.sidebar {
+  width: 240px;
+  background: white;
+  border-right: 1px solid #e5e7eb;
+  padding: 20px 0;
+  position: fixed;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.sidebar-header {
+  padding: 0 20px 20px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.sidebar-header h2 {
+  font-size: 1.5rem;
+  color: #2E7D32;
+  font-weight: 700;
+  margin: 0;
+}
+
+.sidebar-menu {
+  padding: 20px 0;
+}
+
+.section-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: #888;
+  padding: 0 20px;
+  margin: 0 0 10px;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  color: #555;
+  text-decoration: none;
+  transition: all 0.2s;
+}
+
+.menu-item:hover {
+  background: #f5f5f5;
+  color: #2E7D32;
+}
+
+.menu-item.active {
+  background: #E8F5E9;
+  color: #2E7D32;
+  border-right: 3px solid #2E7D32;
+}
+
+/* Main Content */
+.invoices-main {
+  flex: 1;
+  margin-left: 240px;
+  padding: 30px 40px;
+}
+
+.invoices-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 30px;
+}
+
+.invoices-header h1 {
+  font-size: 2rem;
+  color: #333;
+  margin: 0;
+}
+
+.invoices-header p {
+  color: #666;
+  margin: 5px 0 0;
+}
+
+.add-invoice-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 24px;
+  background: #2E7D32;
+  color: white;
+  border: none;
+  border-radius: 25px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.add-invoice-btn:hover {
+  background: #1B5E20;
+  transform: translateY(-2px);
+}
+
+/* Summary Cards */
+.summary-cards {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+  margin-bottom: 30px;
+}
+
+.summary-card {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 25px;
+  border-radius: 15px;
+  background: white;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+}
+
+.summary-card.unpaid {
+  border-left: 4px solid #F4A261;
+}
+
+.summary-card.paid {
+  border-left: 4px solid #2E7D32;
+}
+
+.summary-icon {
+  font-size: 2rem;
+}
+
+.summary-card.unpaid .summary-icon {
+  color: #F4A261;
+}
+
+.summary-card.paid .summary-icon {
+  color: #2E7D32;
+}
+
+.summary-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.summary-label {
+  font-size: 0.85rem;
+  color: #888;
+}
+
+.summary-amount {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #333;
+}
+
+.summary-count {
+  font-size: 0.8rem;
+  color: #999;
+}
+
+/* Invoice Form Modal */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.invoice-form-modal {
+  background: white;
+  padding: 30px;
+  border-radius: 20px;
+  width: 100%;
+  max-width: 450px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+}
+
+.invoice-form-modal h2 {
+  margin: 0 0 25px;
+  color: #333;
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  font-size: 0.9rem;
+  color: #555;
+  margin-bottom: 8px;
+}
+
+.form-group input,
+.form-group select {
+  width: 100%;
+  padding: 12px 15px;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  font-size: 1rem;
+  transition: border-color 0.2s;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+  outline: none;
+  border-color: #2E7D32;
+}
+
+.form-actions {
+  display: flex;
+  gap: 15px;
+  margin-top: 25px;
+}
+
+.cancel-btn,
+.submit-btn {
+  flex: 1;
+  padding: 12px;
+  border-radius: 10px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.cancel-btn {
+  background: #f5f5f5;
+  border: 1px solid #ddd;
+  color: #666;
+}
+
+.cancel-btn:hover {
+  background: #eee;
+}
+
+.submit-btn {
+  background: #2E7D32;
+  border: none;
+  color: white;
+}
+
+.submit-btn:hover {
+  background: #1B5E20;
+}
+
+/* Invoices Section */
+.invoices-section {
+  margin-bottom: 40px;
+}
+
+.invoices-section h2 {
+  font-size: 1.25rem;
+  color: #333;
+  margin-bottom: 15px;
+}
+
+.invoices-list {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.invoice-card {
+  background: white;
+  padding: 20px;
+  border-radius: 15px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 15px;
+}
+
+.invoice-card.overdue {
+  border-left: 4px solid #E63946;
+}
+
+.invoice-card.paid {
+  opacity: 0.7;
+  background: #f9f9f9;
+}
+
+.invoice-main {
+  flex: 1;
+  min-width: 200px;
+}
+
+.invoice-client {
+  font-weight: 600;
+  font-size: 1.1rem;
+  color: #333;
+}
+
+.invoice-amount {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #2E7D32;
+}
+
+.invoice-details {
+  flex: 2;
+  min-width: 200px;
+}
+
+.invoice-desc {
+  display: block;
+  color: #555;
+  margin-bottom: 5px;
+}
+
+.invoice-meta {
+  font-size: 0.85rem;
+  color: #888;
+}
+
+.overdue-badge {
+  background: #E63946;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  margin-left: 8px;
+}
+
+.invoice-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.paid-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 20px;
+  background: #2E7D32;
+  color: white;
+  border: none;
+  border-radius: 20px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.paid-btn:hover {
+  background: #1B5E20;
+}
+
+.delete-btn {
+  padding: 10px 15px;
+  background: #f5f5f5;
+  color: #E63946;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.delete-btn:hover {
+  background: #FDEAEA;
+}
+
+.paid-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 15px;
+  background: #E8F5E9;
+  color: #2E7D32;
+  border-radius: 20px;
+  font-size: 0.85rem;
+}
+
+/* Empty State */
+.empty-state {
+  text-align: center;
+  padding: 40px;
+  background: white;
+  border-radius: 15px;
+  color: #888;
+}
+
+.loading {
+  text-align: center;
+  padding: 40px;
+  color: #888;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .sidebar {
+    display: none;
+  }
+  
+  .invoices-main {
+    margin-left: 0;
+    padding: 20px;
+  }
+  
+  .invoices-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 15px;
+  }
+  
+  .summary-cards {
+    grid-template-columns: 1fr;
+  }
+  
+  .invoice-card {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .invoice-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+}

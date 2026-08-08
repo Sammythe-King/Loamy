@@ -1,0 +1,413 @@
+/* Review Queue Page styles - matches Loamy green theme */
+
+.menu-badge {
+  margin-left: auto;
+  background: #d32f2f;
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 700;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+}
+
+.rq-state {
+  padding: 24px;
+  color: #666;
+  font-size: 0.95rem;
+}
+
+.rq-error {
+  color: #d32f2f;
+  background: #fde8e8;
+  border-radius: 12px;
+}
+
+.rq-resolved-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #E8F5E9;
+  color: #2E7D32;
+  padding: 14px 18px;
+  border-radius: 12px;
+  margin-bottom: 20px;
+  font-weight: 500;
+}
+
+/* Empty state */
+.rq-empty {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  padding: 48px 32px;
+  text-align: center;
+  max-width: 520px;
+}
+
+.rq-empty-icon {
+  font-size: 2.5rem;
+  color: #2E7D32;
+  margin-bottom: 16px;
+}
+
+.rq-empty h3 {
+  margin: 0 0 8px;
+  color: #333;
+  font-size: 1.25rem;
+}
+
+.rq-empty p {
+  color: #666;
+  line-height: 1.6;
+  margin: 0 0 20px;
+}
+
+.rq-demo-btn {
+  background: #2E7D32;
+  color: white;
+  border: none;
+  padding: 10px 22px;
+  border-radius: 25px;
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.rq-demo-btn:hover {
+  background: #1B5E20;
+  transform: translateY(-2px);
+}
+
+/* Two-pane layout: pending nudges (left) + recently logged (right) */
+.rq-layout {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.rq-primary {
+  flex: 1;
+  min-width: 0;
+}
+
+.rq-aside {
+  width: 360px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 24px;
+}
+
+/* If there are no pending nudges, collapse the empty left pane and let the
+   "Recently logged" panel use the full content width. */
+.rq-primary:empty {
+  display: none;
+}
+
+.rq-layout:has(.rq-primary:empty) .rq-aside {
+  width: 100%;
+  position: static;
+}
+
+/* Stack the panes on narrower screens */
+@media (max-width: 1024px) {
+  .rq-layout {
+    flex-direction: column;
+  }
+  .rq-aside {
+    width: 100%;
+    position: static;
+  }
+}
+
+/* List of nudges - responsive grid so cards fill the available width */
+.rq-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 20px;
+}
+
+.rq-card {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  padding: 20px;
+}
+
+.rq-bubble {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.rq-avatar {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #2E7D32;
+  color: white;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rq-bubble p {
+  margin: 0;
+  color: #333;
+  line-height: 1.5;
+  background: #F1F8F2;
+  padding: 12px 16px;
+  border-radius: 0 14px 14px 14px;
+}
+
+.rq-meta {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin: 0 0 14px 48px;
+}
+
+.rq-amount {
+  font-weight: 700;
+  color: #2E7D32;
+  font-size: 1.05rem;
+}
+
+.rq-date {
+  color: #999;
+  font-size: 0.85rem;
+}
+
+.rq-reply-row {
+  display: flex;
+  gap: 10px;
+  margin-left: 48px;
+}
+
+.rq-reply-row input {
+  flex: 1;
+  padding: 12px 16px;
+  border: 1px solid #d1d5db;
+  border-radius: 25px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.rq-reply-row input:focus {
+  border-color: #2E7D32;
+}
+
+.rq-send {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #2E7D32;
+  color: white;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.rq-send:hover:not(:disabled) {
+  background: #1B5E20;
+}
+
+.rq-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.rq-dismiss {
+  margin: 12px 0 0 48px;
+  background: none;
+  border: none;
+  color: #999;
+  font-size: 0.85rem;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.rq-dismiss:hover {
+  color: #d32f2f;
+}
+
+.rq-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: rq-spin 0.7s linear infinite;
+}
+
+@keyframes rq-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Caught-up banner (shown when no pending items but history exists) */
+.rq-caughtup-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #E8F5E9;
+  color: #2E7D32;
+  border: 1px solid #C8E6C9;
+  padding: 14px 18px;
+  border-radius: 12px;
+  font-weight: 500;
+  max-width: 640px;
+  margin-bottom: 24px;
+}
+
+/* Recently logged history - now a panel in the right pane */
+.rq-history {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  padding: 20px;
+}
+
+/* When there's no history pane, the list spans the full content width on its own */
+@media (max-width: 1024px) {
+  .rq-history {
+    margin-top: 8px;
+  }
+}
+
+.rq-history-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rq-history-head h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: #333;
+}
+
+.rq-history-count {
+  background: #2E7D32;
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 700;
+  min-width: 22px;
+  height: 22px;
+  border-radius: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 7px;
+}
+
+.rq-history-sub {
+  color: #888;
+  font-size: 0.88rem;
+  margin: 4px 0 16px;
+}
+
+.rq-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rq-history-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-left: 3px solid #2E7D32;
+  border-radius: 12px;
+  padding: 14px 16px;
+  animation: rq-fade-in 0.35s ease;
+}
+
+@keyframes rq-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.rq-history-check {
+  color: #2E7D32;
+  font-size: 1.1rem;
+  margin-top: 2px;
+}
+
+.rq-history-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.rq-history-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rq-history-vendor {
+  font-weight: 600;
+  color: #333;
+}
+
+.rq-history-amount {
+  font-weight: 700;
+  color: #2E7D32;
+  white-space: nowrap;
+}
+
+.rq-history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.rq-history-tag {
+  background: #F1F8F2;
+  color: #2E7D32;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 12px;
+}
+
+.rq-history-note {
+  color: #777;
+  font-size: 0.83rem;
+  font-style: italic;
+}
+
+.rq-history-date {
+  color: #aaa;
+  font-size: 0.8rem;
+  margin-left: auto;
+}

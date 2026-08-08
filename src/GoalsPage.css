@@ -1,0 +1,701 @@
+/* GoalsPage Styles - Loamy Design System */
+
+.goals-container {
+    display: flex;
+    min-height: 100vh;
+    background-color: rgba(191, 191, 156, 0.206);
+    font-family: "Poppins", sans-serif;
+}
+
+/* Sidebar */
+.goals-sidebar {
+    width: 280px;
+    background: white;
+    border-right: 1px solid rgba(0, 0, 0, 0.08);
+    display: flex;
+    flex-direction: column;
+    padding: 20px;
+}
+
+.sidebar-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 24px;
+}
+
+.sidebar-logo {
+    width: 40px;
+    height: 40px;
+}
+
+.logo-text {
+    font-size: 24px;
+    font-weight: 600;
+    color: #225a24;
+}
+
+/* Ready to Assign */
+.rta-display {
+    background: linear-gradient(135deg, #225a24 0%, #2d7830 100%);
+    border-radius: 16px;
+    padding: 20px;
+    color: white;
+    text-align: center;
+    margin-bottom: 24px;
+}
+
+.rta-label {
+    display: block;
+    font-size: 12px;
+    opacity: 0.8;
+    margin-bottom: 4px;
+}
+
+.rta-amount {
+    display: block;
+    font-size: 28px;
+    font-weight: 700;
+}
+
+/* Sidebar Sections */
+.sidebar-section {
+    margin-bottom: 24px;
+}
+
+.section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    font-weight: 600;
+    font-size: 14px;
+    color: #333;
+}
+
+.add-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: #225a24;
+    padding: 4px 8px;
+    border-radius: 6px;
+    transition: background-color 0.2s;
+}
+
+.add-btn:hover {
+    background-color: rgba(34, 90, 36, 0.1);
+}
+
+/* Accounts List */
+.accounts-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.account-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px;
+    background: rgba(244, 236, 204, 0.3);
+    border-radius: 12px;
+    transition: all 0.2s;
+}
+
+.account-item:hover {
+    background: rgba(244, 236, 204, 0.5);
+}
+
+.account-item:hover .account-actions {
+    opacity: 1;
+}
+
+.account-item:hover .account-balance {
+    opacity: 0;
+}
+
+.account-name {
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.account-right {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.account-balance {
+    font-size: 14px;
+    font-weight: 600;
+    color: #225a24;
+    transition: opacity 0.2s;
+}
+
+.account-actions {
+    position: absolute;
+    right: 0;
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.action-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 6px;
+    border-radius: 6px;
+    color: #666;
+    transition: all 0.2s;
+}
+
+.action-btn:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+    color: #333;
+}
+
+.action-btn.delete:hover {
+    color: #e53935;
+}
+
+/* Sidebar Nav */
+.sidebar-nav {
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.nav-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    border-radius: 12px;
+    cursor: pointer;
+    text-decoration: none;
+    color: #333;
+    font-size: 14px;
+    background: none;
+    border: none;
+    width: 100%;
+    text-align: left;
+    transition: background-color 0.2s;
+}
+
+.nav-item:hover {
+    background-color: rgba(34, 90, 36, 0.08);
+}
+
+.nav-item.logout:hover {
+    background-color: rgba(229, 57, 53, 0.1);
+    color: #e53935;
+}
+
+/* Main Content */
+.goals-main {
+    flex: 1;
+    padding: 24px 32px;
+    overflow-y: auto;
+}
+
+.goals-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 32px;
+}
+
+.goals-header h1 {
+    font-size: 28px;
+    color: #225a24;
+    margin: 0;
+}
+
+.add-category-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 20px;
+    background-color: #225a24;
+    color: white;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: background-color 0.2s;
+}
+
+.add-category-btn:hover {
+    background-color: #1a4a1c;
+}
+
+/* Category Sections */
+.goals-content {
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+}
+
+.category-section h2 {
+    font-size: 18px;
+    color: #333;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid rgba(34, 90, 36, 0.2);
+}
+
+/* Goals List */
+.goals-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.goals-list.completed {
+    opacity: 0.6;
+}
+
+.budget-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    background: white;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 16px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.budget-row:hover {
+    border-color: #225a24;
+    box-shadow: 0 4px 12px rgba(34, 90, 36, 0.1);
+}
+
+.budget-row.selected {
+    border-color: #225a24;
+    background: rgba(34, 90, 36, 0.05);
+}
+
+.budget-row.completed {
+    opacity: 0.6;
+}
+
+.row-left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.letter-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 16px;
+    color: white;
+}
+
+.row-label {
+    font-size: 15px;
+    font-weight: 500;
+    color: #333;
+}
+
+.row-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.row-target {
+    font-size: 15px;
+    font-weight: 600;
+    color: #225a24;
+}
+
+.mini-progress {
+    width: 60px;
+    height: 6px;
+    background: rgba(0, 0, 0, 0.08);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.mini-progress-fill {
+    height: 100%;
+    background: #225a24;
+    border-radius: 3px;
+    transition: width 0.3s;
+}
+
+/* Completed Toggle */
+.completed-section {
+    margin-top: 16px;
+}
+
+.completed-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    color: #666;
+    padding: 8px 0;
+}
+
+.completed-toggle:hover {
+    color: #333;
+}
+
+/* Side Panel */
+.side-panel {
+    width: 360px;
+    background: white;
+    border-left: 1px solid rgba(0, 0, 0, 0.08);
+    padding: 24px;
+    position: fixed;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    overflow-y: auto;
+    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.08);
+    animation: slideIn 0.2s ease-out;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+    }
+    to {
+        transform: translateX(0);
+    }
+}
+
+.panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+}
+
+.panel-header h3 {
+    font-size: 20px;
+    color: #225a24;
+    margin: 0;
+}
+
+.close-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 8px;
+    color: #666;
+    border-radius: 8px;
+    transition: background-color 0.2s;
+}
+
+.close-btn:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+}
+
+/* Progress Circle */
+.progress-circle-container {
+    position: relative;
+    width: 120px;
+    height: 120px;
+    margin: 0 auto 24px;
+}
+
+.progress-circle {
+    width: 100%;
+    height: 100%;
+    transform: rotate(-90deg);
+}
+
+.progress-bg {
+    fill: none;
+    stroke: rgba(0, 0, 0, 0.08);
+    stroke-width: 8;
+}
+
+.progress-fill {
+    fill: none;
+    stroke: #225a24;
+    stroke-width: 8;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.5s ease;
+}
+
+.progress-text {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 24px;
+    font-weight: 700;
+    color: #225a24;
+}
+
+/* Panel Stats */
+.panel-stats {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 24px;
+    padding: 16px;
+    background: rgba(244, 236, 204, 0.3);
+    border-radius: 16px;
+}
+
+.stat {
+    text-align: center;
+}
+
+.stat-label {
+    display: block;
+    font-size: 12px;
+    color: #666;
+    margin-bottom: 4px;
+}
+
+.stat-value {
+    display: block;
+    font-size: 16px;
+    font-weight: 600;
+    color: #333;
+}
+
+/* Assign Section */
+.assign-hint {
+    font-size: 14px;
+    color: #666;
+    line-height: 1.6;
+    margin-bottom: 20px;
+}
+
+.assign-hint mark {
+    background: rgba(34, 90, 36, 0.15);
+    color: #225a24;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+.assign-section {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.assign-section input {
+    flex: 1;
+    padding: 12px 16px;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    border-radius: 12px;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.assign-section input:focus {
+    border-color: #225a24;
+}
+
+.assign-btn {
+    padding: 12px 24px;
+    background-color: #225a24;
+    color: white;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: background-color 0.2s;
+}
+
+.assign-btn:hover {
+    background-color: #1a4a1c;
+}
+
+.edit-target-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    padding: 12px;
+    background: none;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    border-radius: 12px;
+    cursor: pointer;
+    color: #666;
+    font-size: 14px;
+    transition: all 0.2s;
+}
+
+.edit-target-btn:hover {
+    border-color: #225a24;
+    color: #225a24;
+}
+
+/* Panel Edit Mode */
+.panel-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.form-group label {
+    font-size: 13px;
+    font-weight: 500;
+    color: #333;
+}
+
+.form-group input,
+.form-group select {
+    padding: 12px 16px;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    border-radius: 12px;
+    font-size: 14px;
+    outline: none;
+    font-family: inherit;
+    transition: border-color 0.2s;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+    border-color: #225a24;
+}
+
+.panel-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 8px;
+}
+
+.cancel-btn {
+    flex: 1;
+    padding: 12px;
+    background: none;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    border-radius: 12px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.2s;
+}
+
+.cancel-btn:hover {
+    background: rgba(0, 0, 0, 0.03);
+}
+
+.save-btn {
+    flex: 1;
+    padding: 12px;
+    background-color: #225a24;
+    color: white;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: background-color 0.2s;
+}
+
+.save-btn:hover {
+    background-color: #1a4a1c;
+}
+
+/* Modal */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.modal {
+    background: white;
+    border-radius: 20px;
+    padding: 28px;
+    width: 90%;
+    max-width: 400px;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+}
+
+.modal h3 {
+    margin: 0 0 20px;
+    font-size: 20px;
+    color: #225a24;
+}
+
+.modal p {
+    color: #666;
+    margin-bottom: 20px;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 24px;
+}
+
+.delete-btn {
+    flex: 1;
+    padding: 12px;
+    background-color: #e53935;
+    color: white;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: background-color 0.2s;
+}
+
+.delete-btn:hover {
+    background-color: #c62828;
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
+    .side-panel {
+        width: 320px;
+    }
+}
+
+@media (max-width: 768px) {
+    .goals-container {
+        flex-direction: column;
+    }
+    
+    .goals-sidebar {
+        width: 100%;
+        padding: 16px;
+    }
+    
+    .goals-main {
+        padding: 16px;
+    }
+    
+    .side-panel {
+        width: 100%;
+    }
+}

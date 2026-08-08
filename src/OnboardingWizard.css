@@ -1,0 +1,419 @@
+/* Onboarding Wizard - Loamy Design System
+   Palette: dark green #225a24, beige, dark gray, electric green accent #3ddc84 */
+
+.onb-container {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(191, 191, 156, 0.206);
+    font-family: "Poppins", sans-serif;
+    padding: 24px;
+}
+
+.onb-card {
+    background: #ffffff;
+    border-radius: 28px;
+    padding: 56px 52px;
+    width: 100%;
+    max-width: 640px;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.1);
+    /* Belt-and-suspenders: clip anything that could exceed the card. */
+    overflow: hidden;
+}
+
+/* Progress dots */
+.onb-progress {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    margin-bottom: 40px;
+}
+
+.onb-dot {
+    width: 34px;
+    height: 7px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.1);
+    transition: background 0.3s ease;
+}
+
+.onb-dot.active {
+    background: #225a24;
+}
+
+/* Active-step wrapper: only one step is mounted at a time, and it animates in
+   from the right. This removes the previous horizontal track entirely, so no
+   neighbouring step can bleed into view. */
+.onb-step {
+    animation: onb-slide-in 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.onb-slide {
+    box-sizing: border-box;
+}
+
+.onb-title {
+    font-size: 34px;
+    font-weight: 700;
+    color: #1f2937;
+    margin: 0 0 10px;
+    text-align: center;
+    letter-spacing: -0.5px;
+}
+
+.onb-sub {
+    text-align: center;
+    color: rgba(0, 0, 0, 0.5);
+    font-size: 16px;
+    margin: 0 0 34px;
+    line-height: 1.6;
+}
+
+.onb-safe {
+    background: rgba(34, 90, 36, 0.06);
+    border-radius: 14px;
+    padding: 18px 20px;
+    color: #3a4a3a;
+    font-size: 15px;
+}
+
+/* Step 1: text-first bento grid */
+.onb-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+}
+
+.onb-bento {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 34px 20px;
+    border: 2px solid rgba(0, 0, 0, 0.08);
+    border-radius: 20px;
+    background: #fafaf7;
+    cursor: pointer;
+    font-family: inherit;
+    text-align: center;
+    min-height: 128px;
+    transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+}
+
+.onb-bento:hover {
+    border-color: #3ddc84;
+    box-shadow: 0 0 0 4px rgba(61, 220, 132, 0.18);
+    transform: translateY(-3px);
+}
+
+.onb-bento.selected {
+    border-color: #225a24;
+    box-shadow: 0 0 0 4px rgba(34, 90, 36, 0.15);
+}
+
+/* "Other" spans the full grid width so the five options stay balanced. */
+.onb-bento-wide {
+    grid-column: 1 / -1;
+    min-height: 96px;
+    padding: 24px 20px;
+}
+
+/* Custom profession input that appears when "Other" is chosen. */
+.onb-custom-block {
+    animation: onb-fade-in 0.3s ease;
+}
+
+.onb-bento-label {
+    font-size: 18px;
+    font-weight: 700;
+    color: #1f2937;
+    line-height: 1.3;
+}
+
+.onb-bento-desc {
+    font-size: 13px;
+    font-weight: 500;
+    color: rgba(0, 0, 0, 0.45);
+    line-height: 1.4;
+}
+
+/* Step 2 controls */
+.onb-label {
+    display: block;
+    font-size: 15px;
+    font-weight: 600;
+    color: #333;
+    margin: 22px 0 10px;
+}
+
+.onb-select,
+.onb-input {
+    width: 100%;
+    padding: 16px 18px;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    border-radius: 14px;
+    font-size: 16px;
+    font-family: inherit;
+    outline: none;
+    box-sizing: border-box;
+    background: #fff;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.onb-select:focus,
+.onb-input:focus {
+    border-color: #225a24;
+    box-shadow: 0 0 0 3px rgba(34, 90, 36, 0.1);
+}
+
+.onb-bank-block {
+    animation: onb-fade-in 0.35s ease;
+}
+
+.onb-search-wrap {
+    position: relative;
+}
+
+/* Suggestions flow INLINE (not absolute) so they push the card taller instead
+   of being clipped by the card's overflow:hidden. This is what fixes the
+   dropdown getting cut off at the bottom edge. */
+.onb-suggestions {
+    list-style: none;
+    margin: 10px 0 0;
+    padding: 8px;
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    border-radius: 14px;
+    background: #fff;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+    max-height: 240px;
+    overflow-y: auto;
+}
+
+.onb-suggestions li {
+    padding: 14px 16px;
+    border-radius: 10px;
+    font-size: 15px;
+    color: #1f2937;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.onb-suggestions li:hover {
+    background: rgba(34, 90, 36, 0.08);
+}
+
+.onb-hint {
+    font-size: 14px;
+    color: rgba(0, 0, 0, 0.45);
+    margin: 6px 0 0;
+}
+
+/* ---- Bank loading experience ---- */
+.onb-bankloader {
+    animation: onb-fade-in 0.3s ease;
+}
+
+.onb-bankloader-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+}
+
+.onb-bankloader-spinner {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    border: 3px solid rgba(34, 90, 36, 0.15);
+    border-top-color: #225a24;
+    border-radius: 50%;
+    animation: onb-spin 0.8s linear infinite;
+}
+
+.onb-bankloader-text {
+    font-size: 15px;
+    font-weight: 600;
+    color: #225a24;
+    animation: onb-fade-in 0.4s ease;
+}
+
+/* Indeterminate progress bar: a green segment sweeps left-to-right on a loop,
+   reinforcing the feeling that time/progress is moving. */
+.onb-bankloader-bar {
+    position: relative;
+    height: 6px;
+    border-radius: 999px;
+    background: rgba(34, 90, 36, 0.1);
+    overflow: hidden;
+    margin-bottom: 18px;
+}
+
+.onb-bankloader-bar-fill {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: 40%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #225a24, #3ddc84);
+    animation: onb-indeterminate 1.2s ease-in-out infinite;
+}
+
+/* Shimmering skeleton rows that mimic the bank list about to appear. */
+.onb-skeleton-list {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.onb-skeleton-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.onb-skeleton-avatar {
+    flex-shrink: 0;
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+}
+
+.onb-skeleton-line {
+    height: 14px;
+    border-radius: 999px;
+}
+
+.onb-skeleton-avatar,
+.onb-skeleton-line {
+    background: linear-gradient(
+        90deg,
+        rgba(0, 0, 0, 0.06) 25%,
+        rgba(0, 0, 0, 0.12) 37%,
+        rgba(0, 0, 0, 0.06) 63%
+    );
+    background-size: 400% 100%;
+    animation: onb-shimmer 1.4s ease infinite;
+}
+
+@keyframes onb-shimmer {
+    0% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+
+@keyframes onb-indeterminate {
+    0% { left: -40%; width: 40%; }
+    50% { width: 55%; }
+    100% { left: 100%; width: 40%; }
+}
+
+.onb-error {
+    font-size: 14px;
+    color: #e53935;
+    margin: 6px 0 0;
+}
+
+/* Buttons */
+.onb-primary {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    padding: 17px;
+    margin-top: 28px;
+    background-color: #225a24;
+    color: #fff;
+    border: none;
+    border-radius: 14px;
+    font-size: 17px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.onb-primary:hover {
+    background-color: #1a4a1c;
+}
+
+.onb-connect {
+    box-shadow: 0 0 0 0 rgba(61, 220, 132, 0.5);
+    animation: onb-pulse 2s infinite;
+}
+
+.onb-back {
+    display: block;
+    margin: 18px auto 0;
+    background: none;
+    border: none;
+    color: rgba(0, 0, 0, 0.5);
+    font-size: 15px;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.onb-back:hover {
+    color: #225a24;
+    text-decoration: underline;
+}
+
+/* Step 4 loader */
+.onb-loader {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 32px;
+    background-color: #225a24;
+    color: #fff;
+    font-family: "Poppins", sans-serif;
+    animation: onb-fade-in 0.4s ease;
+}
+
+.onb-loader-spinner {
+    width: 60px;
+    height: 60px;
+    border: 4px solid rgba(255, 255, 255, 0.25);
+    border-top-color: #3ddc84;
+    border-radius: 50%;
+    animation: onb-spin 0.9s linear infinite;
+}
+
+.onb-loader-text {
+    font-size: 20px;
+    font-weight: 500;
+    animation: onb-fade-in 0.5s ease;
+}
+
+@keyframes onb-spin {
+    to { transform: rotate(360deg); }
+}
+
+@keyframes onb-fade-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes onb-slide-in {
+    from { opacity: 0; transform: translateX(28px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes onb-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(61, 220, 132, 0.45); }
+    70% { box-shadow: 0 0 0 12px rgba(61, 220, 132, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(61, 220, 132, 0); }
+}
+
+@media (max-width: 560px) {
+    .onb-card { padding: 36px 24px; border-radius: 22px; }
+    .onb-title { font-size: 26px; }
+    .onb-sub { font-size: 15px; margin-bottom: 26px; }
+    .onb-grid { gap: 14px; }
+    .onb-bento { padding: 26px 14px; min-height: 108px; }
+    .onb-bento-label { font-size: 16px; }
+}

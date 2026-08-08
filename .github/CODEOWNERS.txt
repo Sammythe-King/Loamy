@@ -1,0 +1,17 @@
+# CODEOWNERS — every change requires the Owner's review before merge.
+# Works together with GitHub branch protection (see below) so that no code
+# reaches the protected branch without your approval.
+#
+# The owner is assigned to EVERYTHING via the wildcard. Add more specific rules
+# below the wildcard if you later want to delegate certain folders.
+
+* @Sammythe-King
+
+# Extra-sensitive areas — keep these explicitly owned by you even if you ever
+# delegate other paths above.
+/main.py            @Sammythe-King
+/whatsapp.py        @Sammythe-King
+/chat.py            @Sammythe-King
+/.env.example       @Sammythe-King
+/.github/           @Sammythe-King
+/LICENSE            @Sammythe-King

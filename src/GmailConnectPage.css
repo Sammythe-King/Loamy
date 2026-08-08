@@ -1,0 +1,453 @@
+/* GmailConnectPage Styles - Loamy Design System */
+
+.gmail-container {
+    min-height: 100vh;
+    background-color: rgba(191, 191, 156, 0.206);
+    font-family: "Poppins", sans-serif;
+}
+
+/* Header */
+.gmail-header {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    padding: 20px 32px;
+    background: white;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.back-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border-radius: 10px;
+    color: #333;
+    text-decoration: none;
+    font-size: 14px;
+    transition: background-color 0.2s;
+}
+
+.back-btn:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+}
+
+.gmail-header h1 {
+    font-size: 24px;
+    color: #225a24;
+    margin: 0;
+}
+
+/* Main Content */
+.gmail-content {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 32px;
+}
+
+/* Status Card */
+.status-card {
+    background: white;
+    border-radius: 24px;
+    padding: 40px;
+    text-align: center;
+    margin-bottom: 32px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+}
+
+.status-icon {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 20px;
+    font-size: 32px;
+}
+
+.status-icon.disconnected {
+    background-color: rgba(229, 57, 53, 0.1);
+    color: #e53935;
+}
+
+.status-icon.connected {
+    background-color: rgba(34, 90, 36, 0.1);
+    color: #225a24;
+}
+
+.status-card h2 {
+    font-size: 24px;
+    color: #333;
+    margin: 0 0 12px;
+}
+
+.status-card p {
+    font-size: 15px;
+    color: rgba(0, 0, 0, 0.5);
+    max-width: 400px;
+    margin: 0 auto 24px;
+    line-height: 1.6;
+}
+
+.connect-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 28px;
+    background: white;
+    border: 2px solid rgba(0, 0, 0, 0.12);
+    border-radius: 12px;
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: 500;
+    font-family: inherit;
+    transition: all 0.2s;
+}
+
+.connect-btn:hover {
+    border-color: #225a24;
+    box-shadow: 0 4px 12px rgba(34, 90, 36, 0.15);
+}
+
+.google-icon {
+    width: 20px;
+    height: 20px;
+}
+
+/* Features Section */
+.features-section {
+    margin-bottom: 32px;
+}
+
+.features-section h3 {
+    font-size: 18px;
+    color: #333;
+    margin-bottom: 20px;
+}
+
+.features-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+}
+
+.feature-card {
+    background: white;
+    border-radius: 20px;
+    padding: 24px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+    transition: all 0.2s;
+}
+
+.feature-card:hover {
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+.feature-icon {
+    width: 48px;
+    height: 48px;
+    background-color: rgba(34, 90, 36, 0.1);
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 16px;
+    color: #225a24;
+    font-size: 20px;
+}
+
+.feature-card h4 {
+    font-size: 16px;
+    color: #333;
+    margin: 0 0 8px;
+}
+
+.feature-card p {
+    font-size: 13px;
+    color: rgba(0, 0, 0, 0.5);
+    margin: 0;
+    line-height: 1.5;
+}
+
+/* Connected Section */
+.connected-section {
+    margin-bottom: 32px;
+}
+
+.connected-section h3 {
+    font-size: 18px;
+    color: #333;
+    margin-bottom: 20px;
+}
+
+/* Sync Stats */
+.sync-stats {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.sync-stat {
+    flex: 1;
+    background: white;
+    border-radius: 16px;
+    padding: 20px;
+    text-align: center;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+}
+
+.stat-number {
+    display: block;
+    font-size: 32px;
+    font-weight: 700;
+    color: #225a24;
+    margin-bottom: 4px;
+}
+
+.stat-label {
+    font-size: 13px;
+    color: rgba(0, 0, 0, 0.5);
+}
+
+/* Email Data Section */
+.email-data-section {
+    background: white;
+    border-radius: 20px;
+    padding: 24px;
+    margin-bottom: 24px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+}
+
+.section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+}
+
+.section-header h4 {
+    font-size: 16px;
+    color: #333;
+    margin: 0;
+}
+
+.refresh-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    background: rgba(34, 90, 36, 0.1);
+    border: none;
+    border-radius: 10px;
+    color: #225a24;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.refresh-btn:hover:not(:disabled) {
+    background: rgba(34, 90, 36, 0.2);
+}
+
+.refresh-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.refresh-btn.spinning svg {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* Email List */
+.email-list {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.email-empty {
+    text-align: center;
+    padding: 40px 20px;
+    color: rgba(0, 0, 0, 0.4);
+}
+
+.email-empty svg {
+    font-size: 32px;
+    margin-bottom: 12px;
+}
+
+.email-empty p {
+    font-size: 14px;
+    margin: 0;
+}
+
+.email-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border-radius: 12px;
+    margin-bottom: 8px;
+    background: rgba(244, 236, 204, 0.2);
+    transition: background-color 0.2s;
+}
+
+.email-item:hover {
+    background: rgba(244, 236, 204, 0.4);
+}
+
+.email-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+}
+
+.email-sender {
+    font-size: 14px;
+    font-weight: 500;
+    color: #333;
+}
+
+.email-subject {
+    font-size: 13px;
+    color: rgba(0, 0, 0, 0.5);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.email-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+}
+
+.email-type {
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    padding: 4px 10px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.06);
+    color: #666;
+}
+
+.email-type.type-receipt,
+.email-type.type-payment {
+    background: rgba(34, 90, 36, 0.1);
+    color: #225a24;
+}
+
+.email-type.type-bill,
+.email-type.type-invoice {
+    background: rgba(245, 158, 11, 0.1);
+    color: #d97706;
+}
+
+.email-type.type-subscription {
+    background: rgba(99, 102, 241, 0.1);
+    color: #6366f1;
+}
+
+.email-type.type-bank {
+    background: rgba(59, 130, 246, 0.1);
+    color: #3b82f6;
+}
+
+.email-amount {
+    font-size: 14px;
+    font-weight: 600;
+    color: #225a24;
+}
+
+.email-date {
+    font-size: 12px;
+    color: rgba(0, 0, 0, 0.4);
+}
+
+/* Disconnect Button */
+.disconnect-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    padding: 14px;
+    background: rgba(229, 57, 53, 0.08);
+    border: 1px solid rgba(229, 57, 53, 0.2);
+    border-radius: 12px;
+    color: #e53935;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.disconnect-btn:hover {
+    background: rgba(229, 57, 53, 0.15);
+}
+
+/* Privacy Notice */
+.privacy-notice {
+    display: flex;
+    gap: 16px;
+    padding: 20px 24px;
+    background: white;
+    border-radius: 16px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+}
+
+.privacy-notice > svg {
+    font-size: 24px;
+    color: #225a24;
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+
+.privacy-notice h4 {
+    font-size: 14px;
+    color: #333;
+    margin: 0 0 6px;
+}
+
+.privacy-notice p {
+    font-size: 13px;
+    color: rgba(0, 0, 0, 0.5);
+    margin: 0;
+    line-height: 1.5;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .gmail-content {
+        padding: 20px;
+    }
+    
+    .features-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .sync-stats {
+        flex-direction: column;
+    }
+    
+    .email-item {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+    }
+    
+    .email-meta {
+        width: 100%;
+        justify-content: space-between;
+    }
+}
