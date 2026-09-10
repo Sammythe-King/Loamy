@@ -1,13 +1,19 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 import google.generativeai as genai
 import chromadb
 import json
 import os
 import re
+import asyncio
+import threading
 import hashlib
 import secrets
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+# Load .env before any os.getenv() calls below (e.g. the Gemini API key).
+load_dotenv()
 
 # Import chat router
 from chat import router as chat_router
@@ -520,7 +526,9 @@ def true_up_conversion(pending_id: str, actual_bank_amount: float, bank_referenc
         print(f"Error during true-up: {e}")
         return False
 
-API_KEY = "AIzaSyAtnZkWPhIAC0KWudNT4M4gPzl3AxdF5aA" 
+API_KEY = os.getenv("GEMINI_API_KEY")
+if not API_KEY:
+    raise ValueError("Missing GEMINI_API_KEY. Add it to your .env file.")
 genai.configure(api_key=API_KEY)
 
 # Using gemini-2.5-flash for faster responses with good context
@@ -556,8 +564,8 @@ def to_sentence_case(text):
     return text[0].upper() + text[1:]
     
 @app.post("/upload-artifact")
-async def upload_artifact(file: UploadFile = File(...)):
-    print(f"--- Scanning Artifact: {file.filename} ---")
+async def upload_artifact(file: UploadFile = File(...), user_id: str = Form("default")):
+    print(f"--- Scanning Artifact: {file.filename} (user={user_id}) ---")
     
     try:
         file_data = await file.read()
@@ -628,27 +636,32 @@ async def upload_artifact(file: UploadFile = File(...)):
         else:
             converted_amount = numeric_total
 
-        # --- SAVE TO VAULT (RAG) ---
-        # Store with both original and converted amounts
+        # --- SAVE TO SUPABASE (scoped to this user) ---
+        # Store with both original and converted amounts. Human-readable summary
+        # goes in `document`; the deterministic numbers go in typed columns.
         doc_text = f"Spent ₦{converted_amount} at {transaction_data['vendor']} on {transaction_data['date']}. Items: {transaction_data['items']}"
         if is_foreign_currency:
             doc_text += f" (Original: {original_currency}{numeric_total})"
-        
-        collection.add(
-            documents=[doc_text],
-            metadatas=[{
-                "vendor": transaction_data['vendor'],
-                "total": converted_amount,  # Store in NGN
-                "original_total": numeric_total,
-                "original_currency": original_currency,
-                "currency": "NGN",
-                "date": transaction_data['date'],
-                "category": transaction_data['category'],
-                "is_estimate": is_foreign_currency  # True if awaiting bank true-up
-            }],
-            ids=[f"trans_{os.urandom(4).hex()}"]
+
+        tx_id = f"trans_{os.urandom(4).hex()}"
+        save_res = database.add_transaction(
+            user_id=user_id,
+            tx_id=tx_id,
+            amount=converted_amount,          # stored in NGN
+            vendor=transaction_data['vendor'],
+            original_amount=numeric_total,
+            original_currency=original_currency,
+            currency="NGN",
+            date=transaction_data['date'],
+            category=transaction_data['category'],
+            transaction_type="expense",
+            is_estimate=is_foreign_currency,  # True until a bank alert trues it up
+            document=doc_text,
         )
-        print(f"Vault Updated: {transaction_data['vendor']} - ₦{converted_amount}")
+        if save_res["status"] != "success":
+            print(f"[upload-artifact] Supabase save failed: {save_res['error']}")
+            return {"error": f"Could not save transaction: {save_res['error']}"}
+        print(f"Supabase Updated: {transaction_data['vendor']} - ₦{converted_amount}")
 
         # Build response with conversion info
         response_data = {
@@ -845,16 +858,17 @@ async def chat_with_history(query: dict):
         {bills_full_context}
         """
         
-        # 4. Get user's bank accounts
-        accounts_data = accounts_collection.get()
+        # 4. Get THIS user's bank accounts from Supabase (scoped: the old
+        #    unscoped ChromaDB read leaked every user's accounts into the prompt).
         accounts_summary = []
         total_balance = 0
-        for i in range(len(accounts_data['ids'])):
-            meta = accounts_data['metadatas'][i]
-            name = meta.get('name', 'Unknown')
-            balance = float(meta.get('balance', 0))
-            total_balance += balance
-            accounts_summary.append(f"- {name}: ${balance:.2f}")
+        acct_res = database.get_accounts(user_id)
+        if acct_res["status"] == "success":
+            for acct in acct_res["data"]:
+                name = acct.get('account_name') or acct.get('name', 'Unknown')
+                balance = float(acct.get('balance', 0) or 0)
+                total_balance += balance
+                accounts_summary.append(f"- {name}: ₦{balance:,.2f}")
         
         ready_to_assign = total_balance - total_assigned
         accounts_context = "\n".join(accounts_summary) if accounts_summary else "No accounts found."
@@ -868,98 +882,65 @@ async def chat_with_history(query: dict):
         latest_bank_balance = None
         
         try:
-            gmail_data = gmail_data_collection.get(ids=[f"gmail_{user_id}"])
-            if gmail_data and gmail_data['documents']:
-                doc = gmail_data['documents'][0]
-                email_data = json.loads(doc)
-                emails = email_data.get('emails', [])
-                
-                if emails:
-                    # Separate bank alerts from regular emails
-                    bank_alerts = []
-                    regular_emails = []
-                    
-                    for email in emails:
-                        if email.get('is_bank_alert'):
-                            bank_alerts.append(email)
+            # Supabase-primary loader (ChromaDB fallback) so chat sees the same
+            # emails as the dashboard.
+            emails = load_user_emails(user_id)
+            if emails:
+                # Regular (non-bank-alert) email receipts
+                regular_emails = [e for e in emails if not e.get('is_bank_alert')]
+
+                # Format regular email receipts
+                gmail_entries = []
+                for email in regular_emails[:15]:
+                    sender = email.get('sender', 'Unknown')
+                    subject = email.get('subject', '')
+                    date = email.get('date', '')
+                    amount = email.get('amount')
+                    email_type = email.get('type', 'receipt')
+                    email_currency = email.get('currency', 'NGN')
+
+                    # Auto-detect currency from sender for known USD vendors
+                    sender_lower = sender.lower()
+                    if any(usd_vendor in sender_lower for usd_vendor in ['vercel', 'aws', 'github', 'stripe', 'digitalocean', 'heroku', 'netlify', 'cloudflare', 'amazon web services']):
+                        email_currency = 'USD'
+
+                    if amount:
+                        if email_currency != 'NGN':
+                            # Foreign currency - show original + NGN equivalent
+                            exchange_rate = get_exchange_rate(email_currency, "NGN")
+                            ngn_equivalent = amount * exchange_rate
+                            currency_symbols = {'USD': '$', 'EUR': '€', 'GBP': '£', 'MUR': '₨', 'INR': '₹'}
+                            symbol = currency_symbols.get(email_currency, '$')
+                            gmail_entries.append(f"- {date}: {sender} - {subject} ({symbol}{amount:,.2f} = ₦{ngn_equivalent:,.2f}, {email_type})")
                         else:
-                            regular_emails.append(email)
-                    
-                    # Format regular email receipts
-                    gmail_entries = []
-                    for email in regular_emails[:15]:
-                        sender = email.get('sender', 'Unknown')
-                        subject = email.get('subject', '')
-                        date = email.get('date', '')
-                        amount = email.get('amount')
-                        email_type = email.get('type', 'receipt')
-                        email_currency = email.get('currency', 'NGN')
-                        
-                        # Auto-detect currency from sender for known USD vendors
-                        sender_lower = sender.lower()
-                        if any(usd_vendor in sender_lower for usd_vendor in ['vercel', 'aws', 'github', 'stripe', 'digitalocean', 'heroku', 'netlify', 'cloudflare', 'amazon web services']):
-                            email_currency = 'USD'
-                        
-                        if amount:
-                            if email_currency != 'NGN':
-                                # Foreign currency - show original + NGN equivalent
-                                exchange_rate = get_exchange_rate(email_currency, "NGN")
-                                ngn_equivalent = amount * exchange_rate
-                                currency_symbols = {'USD': '$', 'EUR': '€', 'GBP': '£', 'MUR': '₨', 'INR': '₹'}
-                                symbol = currency_symbols.get(email_currency, '$')
-                                gmail_entries.append(f"- {date}: {sender} - {subject} ({symbol}{amount:,.2f} = ₦{ngn_equivalent:,.2f}, {email_type})")
-                            else:
-                                gmail_entries.append(f"- {date}: {sender} - {subject} (₦{amount:,.2f}, {email_type})")
-                        else:
-                            gmail_entries.append(f"- {date}: {sender} - {subject} ({email_type})")
-                    
-                    # Format bank alerts with full transaction details
-                    bank_entries = []
-                    total_credits = 0
-                    total_debits = 0
-                    
-                    for alert in bank_alerts[:20]:
-                        date = alert.get('date', '')
-                        bank = alert.get('bank_name', 'Bank')
-                        tx_type = alert.get('transaction_type', 'unknown')
-                        amount = alert.get('amount')
-                        balance = alert.get('balance')
-                        narration = alert.get('narration', '')
-                        
-                        if amount:
-                            if tx_type == 'credit':
-                                total_credits += amount
-                                bank_entries.append(f"- {date}: {bank} CREDIT ₦{amount:,.2f} | {narration} | Balance: ₦{balance:,.2f}" if balance else f"- {date}: {bank} CREDIT ₦{amount:,.2f} | {narration}")
-                            else:
-                                total_debits += amount
-                                bank_entries.append(f"- {date}: {bank} DEBIT ���{amount:,.2f} | {narration} | Balance: ₦{balance:,.2f}" if balance else f"- {date}: {bank} DEBIT ₦{amount:,.2f} | {narration}")
-                        
-                        # Track latest balance
-                        if balance and not latest_bank_balance:
-                            latest_bank_balance = balance
-                    
-                    if gmail_entries:
-                        gmail_context = f"""
+                            gmail_entries.append(f"- {date}: {sender} - {subject} (₦{amount:,.2f}, {email_type})")
+                    else:
+                        gmail_entries.append(f"- {date}: {sender} - {subject} ({email_type})")
+
+                # Bank alerts: use the SHARED snapshot so the web chat,
+                # WhatsApp, and the dashboard all report the SAME balance and
+                # cash flow. (The old code picked the first alert that had a
+                # balance, which is why chat disagreed with the dashboard.)
+                snap = compute_bank_snapshot(user_id)
+                latest_bank_balance = snap["balance"]
+
+                if gmail_entries:
+                    gmail_context = f"""
         === EMAIL RECEIPTS & PURCHASES FROM GMAIL ===
         {chr(10).join(gmail_entries)}
         """
-                    
-                    if bank_entries:
-                        bank_alerts_context = f"""
+
+                if snap["alert_count"] > 0:
+                    bank_alerts_context = f"""
         === BANK TRANSACTION ALERTS FROM GMAIL ===
-        The user's bank sends email alerts for every transaction. Here are the recent ones:
-        
-        {chr(10).join(bank_entries)}
-        
-        SUMMARY:
-        - Total Credits (Money In): ₦{total_credits:,.2f}
-        - Total Debits (Money Out): ₦{total_debits:,.2f}
-        - Net Cash Flow: ₦{(total_credits - total_debits):,.2f}
-        - Latest Bank Balance: ₦{latest_bank_balance:,.2f}
-        
-        IMPORTANT: You have FULL ACCESS to the user's bank transactions above. When they ask about 
-        spending, income, or their balance - use this REAL data from their bank alerts. This is their 
-        actual financial activity, not estimates. Reference specific transactions when giving advice.
+        The user's bank sends email alerts for every transaction. These are the
+        VERIFIED numbers (identical to the dashboard) - use them exactly:
+
+        {format_snapshot_for_ai(snap)}
+
+        IMPORTANT: You have FULL ACCESS to the user's bank transactions above. When they ask about
+        spending, income, or their balance - use this REAL data. Reference specific transactions
+        when giving advice.
         """
         except Exception as e:
             print(f"Error loading Gmail context: {e}")
@@ -1463,10 +1444,42 @@ async def chat_with_history(query: dict):
 
 
 # --- WhatsApp AI bridge -------------------------------------------------------
-# Adapter that plugs Loamy's advisor into the WhatsApp transport module. It
-# reuses the exact same /chat brain, so WhatsApp replies stay identical to the
-# web app. Kept tiny and single-purpose (Logic/UI Separation rule).
-async def _whatsapp_ai_handler(text: str, user_id: str) -> str:
+# The ONE seam between the WhatsApp transport and the AI brain. whatsapp.py
+# stays pure transport (it only knows a phone number); this bridge does the
+# identity resolution and hands the AI a real, Supabase-backed user_id. Kept
+# small and single-purpose (Logic/UI Separation + Atomic Modularity rules).
+import database  # data-access layer; the only module that talks to Supabase
+import chat_service  # builds the combined Gmail + ledger snapshot for all channels
+
+
+async def _whatsapp_ai_handler(text: str, from_phone: str) -> str:
+    # A. Resolve the WhatsApp phone to a Loamy account (Phase 1: look up an
+    #    existing user by their saved phone_number; full self-service linking
+    #    comes in a later phase). DB work is blocking, so off-load to a thread.
+    try:
+        lookup = await asyncio.to_thread(database.get_user_by_phone, from_phone)
+    except Exception as e:
+        print(f"[WhatsApp bridge] Could not resolve user for {from_phone}: {e}")
+        return "I couldn't reach your account right now. Please try again shortly."
+
+    user_row = lookup.get("data") if lookup.get("status") == "success" else None
+    if not user_row:
+        return ("I couldn't find a Loamy account linked to this number yet. "
+                "Open the Loamy web app, go to your Dashboard, and use "
+                "\"Connect WhatsApp\" to link this number - then message me again.")
+    user_id = user_row["user_id"]
+
+    # C. Give the advisor the SAME snapshot the web chat and dashboard use, from
+    #    the shared compute_bank_snapshot() so every channel reports identical
+    #    numbers. (Previously WhatsApp read an empty Supabase table -> ₦0.00.)
+    snap = await asyncio.to_thread(compute_bank_snapshot, user_id)
+    if snap.get("alert_count", 0) > 0:
+        text = (
+            "=== VERIFIED FINANCIAL SNAPSHOT (use these exact numbers) ===\n"
+            f"{format_snapshot_for_ai(snap)}\n"
+            "=== END SNAPSHOT ===\n\n"
+        ) + text
+
     result = await chat_with_history({"text": text, "user_id": user_id})
     return result.get("reply", "")
 
@@ -1475,27 +1488,29 @@ set_ai_handler(_whatsapp_ai_handler)
 
 
 @app.get("/get-goals")
-async def get_goals():
+async def get_goals(user_id: str = "default"):
+    """Return this user's goals (Supabase-backed), deduped by item name."""
     try:
-        results = goals_collection.get()
+        res = database.get_goals(user_id)
+        rows = res["data"] if res["status"] == "success" else []
         goals = []
         seen_items = {}  # Track items to dedupe in response
-        
-        for i in range(len(results['ids'])):
-            item_name = results['metadatas'][i]['item'].lower()
-            
+
+        for row in rows:
+            item = row.get("item") or ""
+            key = item.lower()
             # Only include first occurrence of each item
-            if item_name in seen_items:
+            if key in seen_items:
                 continue
-            seen_items[item_name] = True
-            
+            seen_items[key] = True
+
             goals.append({
-                "id": results['ids'][i],
-                "item": results['metadatas'][i]['item'],
-                "amount": results['metadatas'][i]['amount'],
-                "deadline": results['metadatas'][i]['deadline'],
-                "category": results['metadatas'][i].get('category', 'goal'),
-                "assigned": results['metadatas'][i].get('assigned', 0)
+                "id": row.get("id"),
+                "item": item,
+                "amount": row.get("amount", 0),
+                "deadline": row.get("deadline", ""),
+                "category": row.get("category", "goal"),
+                "assigned": row.get("assigned", 0),
             })
         return {"goals": goals}
     except Exception as e:
@@ -1654,7 +1669,7 @@ async def cleanup_bad_data():
             # Rule 3: Suspiciously small amounts (under ₦50) that aren't from banks
             if amount > 0 and amount < 50 and "bank" not in vendor.lower():
                 should_delete = True
-                reason = f"Suspiciously small amount: ₦{amount:.2f} from {vendor}"
+                reason = f"Suspiciously small amount: ��{amount:.2f} from {vendor}"
             
             if should_delete:
                 ids_to_delete.append(all_data['ids'][i])
@@ -1753,6 +1768,135 @@ async def cleanup_gmail_data():
         return {"status": "error", "error": str(e), "pending_conversions": []}
 
 
+# ========== SHARED FINANCIAL SNAPSHOT (single source of truth) ==========
+
+def load_user_emails(user_id: str) -> list:
+    """Load a user's synced emails, Supabase-primary with ChromaDB fallback.
+
+    Supabase `gmail_data` is now the source of truth. If it has no row yet
+    (e.g. before the first sync after this change), we fall back to the local
+    ChromaDB blob so nothing breaks in the meantime - the next /sync-gmail-data
+    mirrors into Supabase and this fallback stops being needed.
+    """
+    # 1) Supabase first.
+    try:
+        res = database.get_gmail_data(user_id)
+        if res["status"] == "success" and res["data"]:
+            emails = res["data"].get("emails") or []
+            if emails:
+                return emails
+    except Exception as e:
+        print(f"[v0] load_user_emails Supabase read failed: {e}")
+
+    # 2) Fallback: local ChromaDB blob.
+    try:
+        chroma = gmail_data_collection.get(ids=[f"gmail_{user_id}"])
+        parsed = []
+        for i in range(len(chroma.get('ids', []))):
+            doc = chroma['documents'][i]
+            if not doc:
+                continue
+            try:
+                parsed.extend(json.loads(doc).get("emails", []))
+            except Exception:
+                continue
+        return parsed
+    except Exception as e:
+        print(f"[v0] load_user_emails ChromaDB fallback failed: {e}")
+        return []
+
+
+def compute_bank_snapshot(user_id: str) -> dict:
+    """The ONE balance/cash-flow computation shared by every chat surface.
+
+    Reads the per-user Gmail blob from `gmail_data_collection` (the same store
+    the dashboard reads) and applies the SAME rules the dashboard uses, so the
+    web chat, WhatsApp, and the dashboard all report identical numbers:
+      - balance = sum of each bank's CHRONOLOGICALLY LATEST alert balance,
+        compared by (internal_date_ms, date) so same-day alerts resolve correctly
+        (this is what fixes the web chat's "first alert wins" bug).
+      - total_credits / total_debits summed across all alerts.
+      - spending grouped by normalized category.
+    """
+    snap = {
+        "balance": 0.0, "bank_name": None, "last_date": None,
+        "total_credits": 0.0, "total_debits": 0.0,
+        "spending_by_category": {}, "recent_transactions": [], "alert_count": 0,
+    }
+    try:
+        parsed = load_user_emails(user_id)
+
+        bank_balances = {}
+        alerts = []
+        for email in parsed:
+            if not (email.get('is_bank_alert') is True or email.get('is_bank_alert') == 'true'):
+                continue
+            bank = email.get('bank_name') or 'Bank'
+            balance = float(email.get('balance', 0) or 0)
+            amount = float(email.get('amount', 0) or 0)
+            date = email.get('date', '') or ''
+            internal_ms = int(email.get('internal_date_ms', 0) or 0)
+            tx_type = (email.get('transaction_type', '') or 'debit')
+            narration = email.get('narration') or email.get('subject') or 'Transaction'
+            category = email.get('category', '') or ''
+
+            if balance > 0:
+                existing = bank_balances.get(bank)
+                key = (internal_ms, date)
+                if existing is None or key > (existing['internal_ms'], existing['date']):
+                    bank_balances[bank] = {'balance': balance, 'date': date, 'internal_ms': internal_ms}
+
+            if amount > 0:
+                alerts.append({
+                    'date': date, 'internal_ms': internal_ms, 'bank': bank,
+                    'amount': amount, 'type': tx_type, 'narration': narration,
+                })
+                if tx_type == 'credit':
+                    snap['total_credits'] += amount
+                else:
+                    snap['total_debits'] += amount
+                    cat = normalize_category(category or 'Other') or 'Other'
+                    snap['spending_by_category'][cat] = snap['spending_by_category'].get(cat, 0) + amount
+
+        snap['balance'] = round(sum(b['balance'] for b in bank_balances.values()), 2)
+        if bank_balances:
+            latest = max(bank_balances.items(), key=lambda kv: (kv[1]['internal_ms'], kv[1]['date']))
+            snap['bank_name'] = latest[0]
+            snap['last_date'] = latest[1]['date']
+        snap['total_credits'] = round(snap['total_credits'], 2)
+        snap['total_debits'] = round(snap['total_debits'], 2)
+        snap['spending_by_category'] = {k: round(v, 2) for k, v in snap['spending_by_category'].items()}
+
+        alerts.sort(key=lambda a: (a['internal_ms'], a['date']), reverse=True)
+        snap['recent_transactions'] = alerts[:30]
+        snap['alert_count'] = len(alerts)
+    except Exception as e:
+        print(f"[v0] compute_bank_snapshot error: {e}")
+    return snap
+
+
+def format_snapshot_for_ai(snap: dict) -> str:
+    """Render the shared snapshot as prompt-ready text for Gemini."""
+    cats = "\n".join(
+        f"  - {c}: ₦{a:,.2f}" for c, a in snap.get("spending_by_category", {}).items()
+    ) or "  - No categorized spending yet."
+    txns = "\n".join(
+        f"  - {t['date']}: {t['bank']} {t['type'].upper()} ₦{t['amount']:,.2f} | {t['narration'][:40]}"
+        for t in snap.get("recent_transactions", [])[:15]
+    ) or "  - No bank transactions yet."
+    bank_str = f" (latest alert from {snap['bank_name']} on {snap['last_date']})" if snap.get("bank_name") else ""
+    return f"""- Current Balance: ₦{snap.get('balance', 0):,.2f}{bank_str}
+- Total Money In: ₦{snap.get('total_credits', 0):,.2f}
+- Total Money Out: ₦{snap.get('total_debits', 0):,.2f}
+- Bank alerts on file: {snap.get('alert_count', 0)}
+
+=== SPENDING BY CATEGORY ===
+{cats}
+
+=== RECENT BANK TRANSACTIONS (most recent first) ===
+{txns}"""
+
+
 # ========== DASHBOARD ENDPOINT ==========
 
 @app.get("/get-dashboard-data")
@@ -1768,12 +1912,16 @@ async def get_dashboard_data(user_id: str = "default"):
     - Financial summary
     """
     try:
-        # 0. Auto-refresh bank data server-side (throttled). This is what makes
-        #    the dashboard update on its own without the user reconnecting Gmail:
-        #    if any user has stored credentials and the cooldown has elapsed, we
-        #    mint a fresh access token and pull new emails before aggregating.
+        # 0. Auto-refresh bank data server-side (throttled), for THIS user only.
+        #    This is what makes the dashboard update on its own without the user
+        #    reconnecting Gmail. It used to call maybe_autosync_all_users(), which
+        #    synced every user with stored Gmail credentials before returning a
+        #    single dashboard - so user #5's load waited on users #1-4's Gmail
+        #    syncs. Scoping to user_id and firing it in the background (instead of
+        #    awaiting it) means this response is never blocked by a mail fetch;
+        #    the sync just updates storage for the *next* load to pick up.
         try:
-            await maybe_autosync_all_users()
+            spawn_background_sync(user_id)
         except Exception as _e:
             print(f"[v0] Dashboard: server-side autosync skipped: {_e}")
 
@@ -1805,30 +1953,13 @@ async def get_dashboard_data(user_id: str = "default"):
             print(f"[v0] Dashboard: could not load review queue state: {e}")
 
         try:
-            # Scope Gmail data to THIS user only. Reading the whole collection
-            # would merge every user's bank emails together, so a brand-new user
-            # would see a previous user's transactions/balance. Keyed by the
-            # per-user blob id written in /sync-gmail-data (f"gmail_{user_id}").
-            gmail_results = gmail_data_collection.get(ids=[f"gmail_{user_id}"])
+            # Scope Gmail data to THIS user only, via the shared loader
+            # (Supabase-primary with ChromaDB fallback) so the dashboard, chat,
+            # and WhatsApp all read the exact same per-user email set.
             bank_balances = {}  # Track latest balance per bank
+            parsed_emails = load_user_emails(user_id)
 
-            print(f"[v0] Dashboard: Found {len(gmail_results['ids'])} Gmail records for {user_id}")
-
-            # Gmail data is stored as a single JSON blob per user in the document body
-            # (document = json.dumps({"emails": [...], "stats": {...}})), so parse the
-            # documents to get individual emails rather than the record-level metadata.
-            parsed_emails = []
-            for i in range(len(gmail_results['ids'])):
-                doc = gmail_results['documents'][i]
-                if not doc:
-                    continue
-                try:
-                    blob = json.loads(doc)
-                    parsed_emails.extend(blob.get("emails", []))
-                except Exception:
-                    continue
-
-            print(f"[v0] Dashboard: Parsed {len(parsed_emails)} emails from Gmail blob")
+            print(f"[v0] Dashboard: Parsed {len(parsed_emails)} emails for {user_id}")
 
             for email in parsed_emails:
                 is_bank = email.get('is_bank_alert') is True or email.get('is_bank_alert') == 'true'
@@ -2418,12 +2549,50 @@ def _build_nudge_message(user_name, vendor, amount, tx_type="debit"):
     )
 
 
-def _scan_bank_emails_for_review(user_id="default", user_name="there"):
+REVIEW_SCAN_COOLDOWN_SECONDS = 60  # matches the "feels instant" bar for a page open
+
+
+def _review_scan_cooldown_elapsed(user_id):
+    """True if enough time has passed since the last review-queue scan for this
+    user. Mirrors _server_sync_cooldown_elapsed's storage pattern (sync_state_collection)
+    so we don't add a new dependency just to throttle this."""
+    try:
+        res = sync_state_collection.get(ids=[f"reviewscan_{user_id}"])
+        if res["ids"]:
+            last = int((res["metadatas"][0] or {}).get("last_review_scan_at", 0))
+            return (int(datetime.now().timestamp()) - last) >= REVIEW_SCAN_COOLDOWN_SECONDS
+    except Exception:
+        pass
+    return True
+
+
+def _mark_review_scan(user_id):
+    sid = f"reviewscan_{user_id}"
+    meta = {"user_id": user_id, "last_review_scan_at": int(datetime.now().timestamp())}
+    try:
+        existing = sync_state_collection.get(ids=[sid])
+        if existing["ids"]:
+            sync_state_collection.update(ids=[sid], metadatas=[meta])
+        else:
+            sync_state_collection.add(ids=[sid], documents=[f"review scan stamp {user_id}"], metadatas=[meta])
+    except Exception as e:
+        print(f"[REVIEW] Could not stamp review scan for {user_id}: {e}")
+
+
+def _scan_bank_emails_for_review(user_id="default", user_name="there", force=False):
     """
     Scan synced bank-alert emails and auto-queue any uncategorized credit/debit
     whose vendor we don't already recognize. Runs on demand so the Review Queue
     stays fresh without depending on the dashboard being opened. Deterministic logic.
+
+    This does one DB lookup per uncategorized email, so re-running it on every
+    single page load/render was making Review Queue slow to open. Throttled to
+    once per REVIEW_SCAN_COOLDOWN_SECONDS per user; pass force=True to bypass
+    (e.g. right after a fresh Gmail sync).
     """
+    if not force and not _review_scan_cooldown_elapsed(user_id):
+        return 0
+    _mark_review_scan(user_id)
     try:
         # Only this user's synced Gmail blob, never the whole collection.
         gmail_results = gmail_data_collection.get(ids=[f"gmail_{user_id}"])
@@ -2820,70 +2989,70 @@ async def add_bill(data: dict):
 
 @app.put("/update-goal")
 async def update_goal(data: dict):
-    """Update a goal's target amount"""
+    """Update a goal's target amount (Supabase-backed, scoped to the user)."""
     try:
+        user_id = data.get("user_id", "default")
         item_name = data.get("item", "")
         new_amount = float(data.get("amount", 0))
         deadline = data.get("deadline", "Monthly")
         category = data.get("category", "goal")
         assigned = float(data.get("assigned", 0))
-        
-        # Find existing goal by name
-        results = goals_collection.get()
+
+        # Find existing goal by name within THIS user's goals.
+        res = database.get_goals(user_id)
+        rows = res["data"] if res["status"] == "success" else []
         goal_id = None
-        
-        for i in range(len(results['ids'])):
-            if results['metadatas'][i]['item'].lower() == item_name.lower():
-                goal_id = results['ids'][i]
-                # Keep the existing category if not specified
+        for row in rows:
+            if (row.get("item") or "").lower() == item_name.lower():
+                goal_id = row.get("id")
+                # Keep the existing category if not specified.
                 if category == "goal":
-                    category = results['metadatas'][i].get('category', 'goal')
+                    category = row.get("category", "goal")
                 break
-        
-        if goal_id:
-            # Delete old entry
-            goals_collection.delete(ids=[goal_id])
-        else:
-            # Create new ID if goal doesn't exist
+
+        if not goal_id:
             goal_id = f"goal_{os.urandom(4).hex()}"
-        
-        # Add updated goal
-        goals_collection.add(
-            documents=[f"Goal: Save ${new_amount} for {item_name} by {deadline}"],
-            metadatas=[{
-                "item": to_sentence_case(item_name),
-                "amount": new_amount,
-                "deadline": deadline,
-                "category": category,
-                "assigned": assigned
-            }],
-            ids=[goal_id]
+
+        # Upsert keyed on the goal id (add_goal upserts on conflict).
+        saved = database.add_goal(
+            user_id=user_id, goal_id=goal_id,
+            item=to_sentence_case(item_name),
+            amount=new_amount, deadline=deadline,
+            category=category, assigned=assigned,
+            document=f"Goal: Save {new_amount} for {item_name} by {deadline}",
         )
-        print(f"Goal Updated: {item_name} -> ${new_amount}")
+        if saved["status"] != "success":
+            raise HTTPException(status_code=500, detail=saved["error"])
+        print(f"Goal Updated: {item_name} -> {new_amount}")
         return {"status": "success", "id": goal_id}
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Update Goal Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/delete-goal")
 async def delete_goal(data: dict):
-    """Delete a goal/bill by name"""
+    """Delete a goal/bill by name (Supabase-backed, scoped to the user)."""
     try:
+        user_id = data.get("user_id", "default")
         item_name = data.get("item", "")
-        
-        # Find goal by name
-        results = goals_collection.get()
+
+        # Find goal by name within THIS user's goals.
+        res = database.get_goals(user_id)
+        rows = res["data"] if res["status"] == "success" else []
         goal_id = None
-        
-        for i in range(len(results['ids'])):
-            if results['metadatas'][i]['item'].lower() == item_name.lower():
-                goal_id = results['ids'][i]
+        for row in rows:
+            if (row.get("item") or "").lower() == item_name.lower():
+                goal_id = row.get("id")
                 break
-        
+
         if not goal_id:
             raise HTTPException(status_code=404, detail="Goal not found")
-        
-        goals_collection.delete(ids=[goal_id])
+
+        removed = database.delete_goal(goal_id)
+        if removed["status"] != "success":
+            raise HTTPException(status_code=500, detail=removed["error"])
         print(f"Goal Deleted: {item_name}")
         return {"status": "success"}
     except HTTPException:
@@ -2987,17 +3156,23 @@ async def assign_to_goal(data: dict):
 # ========== ACCOUNT ENDPOINTS ==========
 
 @app.get("/get-accounts")
-async def get_accounts():
-    """Get all bank accounts"""
+async def get_accounts(user_id: str = "default"):
+    """Get all bank accounts for a user (Supabase-backed).
+
+    The UI uses `nickname`/`type`, which we keep in metadata while the amount
+    lives in the typed `account_name`/`balance` columns, so the response shape
+    the frontend expects is preserved exactly."""
     try:
-        results = accounts_collection.get()
+        res = database.get_accounts(user_id)
+        rows = res["data"] if res["status"] == "success" else []
         accounts = []
-        for i in range(len(results['ids'])):
+        for row in rows:
+            meta = row.get("metadata") or {}
             accounts.append({
-                "id": results['ids'][i],
-                "nickname": results['metadatas'][i]['nickname'],
-                "balance": results['metadatas'][i]['balance'],
-                "type": results['metadatas'][i].get('type', 'Checking')
+                "id": row.get("id"),
+                "nickname": meta.get("nickname") or row.get("account_name") or "",
+                "balance": row.get("balance", 0),
+                "type": meta.get("type", "Checking"),
             })
         return {"accounts": accounts}
     except Exception as e:
@@ -3005,61 +3180,68 @@ async def get_accounts():
 
 @app.post("/add-account")
 async def add_account(data: dict):
-    """Add a new bank account"""
+    """Add a new bank account (Supabase-backed)."""
     try:
+        user_id = data.get("user_id", "default")
         nickname = data.get("nickname")
         balance = float(data.get("balance", 0))
         acc_type = data.get("type", "Checking")
-        
+
         account_id = f"acc_{os.urandom(4).hex()}"
-        
-        accounts_collection.add(
-            documents=[f"Account: {nickname} with balance ${balance}"],
-            metadatas=[{
-                "nickname": nickname,
-                "balance": balance,
-                "type": acc_type
-            }],
-            ids=[account_id]
+
+        saved = database.add_account(
+            user_id=user_id, account_id=account_id,
+            account_name=nickname, balance=balance,
+            # legacy UI fields kept in metadata so nothing is lost
+            nickname=nickname, type=acc_type,
+            document=f"Account: {nickname} with balance {balance}",
         )
+        if saved["status"] != "success":
+            raise HTTPException(status_code=500, detail=saved["error"])
         print(f"Account Added: {nickname}")
         return {"status": "success", "id": account_id}
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Add Account Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/update-account/{account_id}")
 async def update_account(account_id: str, data: dict):
-    """Update an existing bank account"""
+    """Update an existing bank account (Supabase-backed upsert)."""
     try:
+        user_id = data.get("user_id", "default")
         nickname = data.get("nickname")
         balance = float(data.get("balance", 0))
         acc_type = data.get("type", "Checking")
-        
-        # Delete old and add updated version
-        accounts_collection.delete(ids=[account_id])
-        accounts_collection.add(
-            documents=[f"Account: {nickname} with balance ${balance}"],
-            metadatas=[{
-                "nickname": nickname,
-                "balance": balance,
-                "type": acc_type
-            }],
-            ids=[account_id]
+
+        saved = database.add_account(
+            user_id=user_id, account_id=account_id,
+            account_name=nickname, balance=balance,
+            nickname=nickname, type=acc_type,
+            document=f"Account: {nickname} with balance {balance}",
         )
+        if saved["status"] != "success":
+            raise HTTPException(status_code=500, detail=saved["error"])
         print(f"Account Updated: {nickname}")
         return {"status": "success"}
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Update Account Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/delete-account/{account_id}")
 async def delete_account(account_id: str):
-    """Delete a bank account"""
+    """Delete a bank account (Supabase-backed)."""
     try:
-        accounts_collection.delete(ids=[account_id])
+        removed = database.delete_account(account_id)
+        if removed["status"] != "success":
+            raise HTTPException(status_code=500, detail=removed["error"])
         print(f"Account Deleted: {account_id}")
         return {"status": "success"}
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Delete Account Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -3073,57 +3255,41 @@ async def allocate_funds(data: dict):
     Expected format: {"allocations": [{"item": "Rent", "amount": 500}, {"item": "Savings", "amount": 200}]}
     """
     try:
+        user_id = data.get("user_id", "default")
         allocations = data.get("allocations", [])
         print(f"[ALLOCATE] Received allocations: {allocations}")
         updated = []
-        
-        # Get all goals once
-        all_goals = goals_collection.get()
-        print(f"[ALLOCATE] Found {len(all_goals['ids'])} goals in database")
-        
+
+        # Get this user's goals once (Supabase-backed).
+        res = database.get_goals(user_id)
+        rows = res["data"] if res["status"] == "success" else []
+        print(f"[ALLOCATE] Found {len(rows)} goals in database")
+
+        # Index by lowercased item for O(1) matching.
+        by_item = {(r.get("item") or "").lower().strip(): r for r in rows}
+
         for alloc in allocations:
             item_name = alloc.get("item", "").lower().strip()
             add_amount = float(alloc.get("amount", 0))
-            
-            print(f"[ALLOCATE] Processing: {item_name} = ${add_amount}")
-            
+
+            print(f"[ALLOCATE] Processing: {item_name} = {add_amount}")
+
             if not item_name or add_amount <= 0:
                 print(f"[ALLOCATE] Skipping invalid: {item_name}")
                 continue
-            
-            # Find the goal/bill by name
-            found = False
-            for i in range(len(all_goals['ids'])):
-                meta = all_goals['metadatas'][i]
-                db_item = meta.get('item', '').lower().strip()
-                
-                if db_item == item_name:
-                    found = True
-                    print(f"[ALLOCATE] Found match: {db_item}")
-                    goal_id = all_goals['ids'][i]
-                    current_assigned = float(meta.get('assigned', 0))
-                    new_assigned = current_assigned + add_amount
-                    
-                    # Update the goal
-                    goals_collection.delete(ids=[goal_id])
-                    goals_collection.add(
-                        documents=[all_goals['documents'][i]],
-                        metadatas=[{
-                            "item": meta.get('item'),
-                            "amount": meta.get('amount', 0),
-                            "deadline": meta.get('deadline', ''),
-                            "category": meta.get('category', 'goal'),
-                            "assigned": new_assigned
-                        }],
-                        ids=[goal_id]
-                    )
-                    updated.append({"item": meta.get('item'), "new_assigned": new_assigned})
-                    print(f"[ALLOCATE] Updated {meta.get('item')} to ${new_assigned}")
-                    break
-            
-            if not found:
+
+            row = by_item.get(item_name)
+            if not row:
                 print(f"[ALLOCATE] No match found for: {item_name}")
-        
+                continue
+
+            # Deterministic Python does the math (Ledger rule); DB just stores it.
+            new_assigned = float(row.get("assigned", 0) or 0) + add_amount
+            saved = database.update_goal(row.get("id"), assigned=new_assigned)
+            if saved["status"] == "success":
+                updated.append({"item": row.get("item"), "new_assigned": new_assigned})
+                print(f"[ALLOCATE] Updated {row.get('item')} to {new_assigned}")
+
         print(f"[ALLOCATE] Total updated: {len(updated)}")
         return {"status": "success", "updated": updated}
     except Exception as e:
@@ -3133,121 +3299,120 @@ async def allocate_funds(data: dict):
 # ========== EXPENSE ENDPOINTS ==========
 
 @app.get("/get-expenses")
-async def get_expenses():
-    """Get all expenses from both manual entries and uploaded receipts"""
+async def get_expenses(user_id: str = "default"):
+    """Get all expenses for a user (Supabase-backed): manual expense entries
+    PLUS transactions (uploaded receipts / synced bank debits), merged into the
+    single shape the frontend expects."""
     try:
         expenses = []
-        
-        # 1. Get manually added expenses
-        manual_results = expenses_collection.get()
-        for i in range(len(manual_results['ids'])):
+
+        # 1. Manually added expenses.
+        exp_res = database.get_expenses(user_id)
+        for row in (exp_res["data"] if exp_res["status"] == "success" else []):
+            meta = row.get("metadata") or {}
             expenses.append({
-                "id": manual_results['ids'][i],
-                "description": manual_results['metadatas'][i]['description'],
-                "amount": manual_results['metadatas'][i]['amount'],
-                "category": manual_results['metadatas'][i]['category'],
-                "date": manual_results['metadatas'][i]['date'],
-                "notes": manual_results['metadatas'][i].get('notes', '')
+                "id": row.get("id"),
+                "description": row.get("description", ""),
+                "amount": row.get("amount", 0),
+                "category": row.get("category", "other"),
+                "date": row.get("date", ""),
+                "notes": meta.get("notes", ""),
             })
-        
-        # 2. Get expenses from uploaded receipts (user_transactions collection)
-        receipt_results = collection.get()
-        for i in range(len(receipt_results['ids'])):
-            meta = receipt_results['metadatas'][i]
+
+        # 2. Transactions (uploaded receipts / synced debits).
+        tx_res = database.get_transactions(user_id)
+        for row in (tx_res["data"] if tx_res["status"] == "success" else []):
             expenses.append({
-                "id": receipt_results['ids'][i],
-                "description": meta.get('vendor', 'Unknown'),
-                "amount": meta.get('total', 0),
-                "category": meta.get('category', 'other'),
-                "date": meta.get('date', ''),
-                "notes": "From receipt upload"
+                "id": row.get("id"),
+                "description": row.get("vendor") or "Unknown",
+                "amount": row.get("amount", 0),
+                "category": row.get("category", "other"),
+                "date": row.get("date", ""),
+                "notes": "From receipt/bank sync",
             })
-        
+
         return {"expenses": expenses}
     except Exception as e:
         return {"expenses": [], "error": str(e)}
 
 @app.post("/add-expense")
 async def add_expense(data: dict):
-    """Add a new expense"""
+    """Add a new expense (Supabase-backed)."""
     try:
+        user_id = data.get("user_id", "default")
         description = data.get("description", "")
         amount = float(data.get("amount", 0))
         category = data.get("category", "other")
         date = data.get("date", datetime.now().isoformat())
         notes = data.get("notes", "")
-        
+
         expense_id = f"exp_{os.urandom(4).hex()}"
-        
-        expenses_collection.add(
-            documents=[f"Expense: {description} - ${amount} on {date}"],
-            metadatas=[{
-                "description": description,
-                "amount": amount,
-                "category": category,
-                "date": date,
-                "notes": notes
-            }],
-            ids=[expense_id]
+
+        saved = database.add_expense(
+            user_id=user_id, expense_id=expense_id,
+            description=description, amount=amount,
+            category=category, date=date, notes=notes,
+            document=f"Expense: {description} - {amount} on {date}",
         )
-        print(f"Expense Added: {description} - ${amount}")
+        if saved["status"] != "success":
+            raise HTTPException(status_code=500, detail=saved["error"])
+        print(f"Expense Added: {description} - {amount}")
         return {"status": "success", "id": expense_id}
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Add Expense Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/update-expense")
 async def update_expense(data: dict):
-    """Update an existing expense"""
+    """Update an existing expense (Supabase-backed upsert)."""
     try:
+        user_id = data.get("user_id", "default")
         expense_id = data.get("id")
         description = data.get("description", "")
         amount = float(data.get("amount", 0))
         category = data.get("category", "other")
         date = data.get("date", datetime.now().isoformat())
         notes = data.get("notes", "")
-        
-        # Delete old entry
-        expenses_collection.delete(ids=[expense_id])
-        
-        # Add updated expense
-        expenses_collection.add(
-            documents=[f"Expense: {description} - ${amount} on {date}"],
-            metadatas=[{
-                "description": description,
-                "amount": amount,
-                "category": category,
-                "date": date,
-                "notes": notes
-            }],
-            ids=[expense_id]
+
+        saved = database.add_expense(
+            user_id=user_id, expense_id=expense_id,
+            description=description, amount=amount,
+            category=category, date=date, notes=notes,
+            document=f"Expense: {description} - {amount} on {date}",
         )
-        print(f"Expense Updated: {description} - ${amount}")
+        if saved["status"] != "success":
+            raise HTTPException(status_code=500, detail=saved["error"])
+        print(f"Expense Updated: {description} - {amount}")
         return {"status": "success"}
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Update Expense Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/delete-expense")
 async def delete_expense(data: dict):
-    """Delete an expense from either collection"""
+    """Delete an expense: try the manual expenses table first, then transactions
+    (uploaded receipts / synced debits share the same id space in the UI)."""
     try:
         expense_id = data.get("id")
-        
-        # Try to delete from manual expenses first
+
+        # Manual expenses first.
         try:
-            expenses_collection.delete(ids=[expense_id])
+            database.delete_expense(expense_id)
             print(f"Expense Deleted from expenses: {expense_id}")
-        except:
+        except Exception:
             pass
-        
-        # Also try to delete from receipts/transactions collection
+
+        # Then transactions.
         try:
-            collection.delete(ids=[expense_id])
+            database.delete_transaction(expense_id)
             print(f"Expense Deleted from transactions: {expense_id}")
-        except:
+        except Exception:
             pass
-        
+
         return {"status": "success"}
     except Exception as e:
         print(f"Delete Expense Error: {str(e)}")
@@ -3274,38 +3439,25 @@ def verify_password(password: str, hashed: str) -> bool:
 
 @app.get("/get-chats")
 async def get_chats(user_id: str = "default"):
-    """Get all chats for listing in sidebar, scoped to one user."""
+    """Get all chats for listing in sidebar, scoped to one user (Supabase)."""
     try:
-        chats_data = chats_collection.get(where={"user_id": user_id})
-        
-        if not chats_data['ids']:
-            return {"chats": []}
-        
+        res = database.get_chats(user_id)
+        if res["status"] != "success":
+            return {"chats": [], "error": res["error"]}
+
         chats = []
-        for i in range(len(chats_data['ids'])):
-            doc = chats_data['documents'][i]
-            metadata = chats_data['metadatas'][i]
-            
-            # Parse the document JSON
-            try:
-                chat_content = json.loads(doc)
-                messages = chat_content.get('messages', [])
-            except:
-                messages = []
-            
+        for row in res["data"]:
+            messages = row.get("messages") or []
             chats.append({
-                "id": chats_data['ids'][i],
-                "title": metadata.get('title', 'New Chat'),
-                "created_at": metadata.get('created_at', ''),
-                "updated_at": metadata.get('updated_at', ''),
-                "message_count": len(messages)
+                "id": row["id"],
+                "title": row.get("title", "New Chat"),
+                "created_at": row.get("created_at", ""),
+                "updated_at": row.get("updated_at", ""),
+                "message_count": len(messages),
             })
-        
-        # Sort by updated_at descending (newest first)
-        chats.sort(key=lambda x: x.get('updated_at', ''), reverse=True)
-        
+        # Already ordered by updated_at desc in the query.
         return {"chats": chats}
-        
+
     except Exception as e:
         print(f"Get chats error: {str(e)}")
         return {"chats": [], "error": str(e)}
@@ -3320,24 +3472,14 @@ async def create_chat(data: dict):
         messages = data.get("messages", [])
         
         chat_id = f"chat_{secrets.token_hex(8)}"
-        now = datetime.now().isoformat()
-        
-        chat_content = {
-            "messages": messages,
-            "created_at": now
-        }
-        
-        chats_collection.add(
-            documents=[json.dumps(chat_content)],
-            metadatas=[{
-                "user_id": user_id,  # scope every chat to its owner
-                "title": first_message[:50],  # Truncate title if too long
-                "created_at": now,
-                "updated_at": now
-            }],
-            ids=[chat_id]
+
+        res = database.add_chat(
+            user_id=user_id, chat_id=chat_id,
+            title=first_message[:50], messages=messages,
         )
-        
+        if res["status"] != "success":
+            return {"status": "error", "error": res["error"]}
+
         return {"status": "success", "id": chat_id, "title": first_message[:50]}
         
     except Exception as e:
@@ -3347,31 +3489,22 @@ async def create_chat(data: dict):
 
 @app.get("/get-chat/{chat_id}")
 async def get_chat(chat_id: str):
-    """Get a specific chat by ID"""
+    """Get a specific chat thread by ID (Supabase)."""
     try:
-        chat_data = chats_collection.get(ids=[chat_id])
-        
-        if not chat_data['ids']:
+        res = database.get_chat(chat_id)
+        if res["status"] != "success" or not res["data"]:
             return {"status": "error", "error": "Chat not found"}
-        
-        doc = chat_data['documents'][0]
-        metadata = chat_data['metadatas'][0]
-        
-        try:
-            chat_content = json.loads(doc)
-            messages = chat_content.get('messages', [])
-        except:
-            messages = []
-        
+
+        row = res["data"]
         return {
             "status": "success",
             "id": chat_id,
-            "title": metadata.get('title', 'New Chat'),
-            "messages": messages,
-            "created_at": metadata.get('created_at', ''),
-            "updated_at": metadata.get('updated_at', '')
+            "title": row.get("title", "New Chat"),
+            "messages": row.get("messages") or [],
+            "created_at": row.get("created_at", ""),
+            "updated_at": row.get("updated_at", ""),
         }
-        
+
     except Exception as e:
         print(f"Get chat error: {str(e)}")
         return {"status": "error", "error": str(e)}
@@ -3379,36 +3512,14 @@ async def get_chat(chat_id: str):
 
 @app.put("/update-chat/{chat_id}")
 async def update_chat(chat_id: str, data: dict):
-    """Update chat messages"""
+    """Update chat messages (Supabase)."""
     try:
         messages = data.get("messages", [])
-        now = datetime.now().isoformat()
-        
-        # Get existing metadata
-        existing = chats_collection.get(ids=[chat_id])
-        if not existing['ids']:
-            return {"status": "error", "error": "Chat not found"}
-        
-        old_metadata = existing['metadatas'][0]
-        
-        chat_content = {
-            "messages": messages,
-            "created_at": old_metadata.get('created_at', now)
-        }
-        
-        chats_collection.update(
-            documents=[json.dumps(chat_content)],
-            metadatas=[{
-                "user_id": old_metadata.get('user_id', 'default'),  # keep owner
-                "title": old_metadata.get('title', 'Chat'),
-                "created_at": old_metadata.get('created_at', now),
-                "updated_at": now
-            }],
-            ids=[chat_id]
-        )
-        
+        res = database.update_chat(chat_id, messages=messages)
+        if res["status"] != "success":
+            return {"status": "error", "error": res["error"]}
         return {"status": "success"}
-        
+
     except Exception as e:
         print(f"Update chat error: {str(e)}")
         return {"status": "error", "error": str(e)}
@@ -3416,9 +3527,11 @@ async def update_chat(chat_id: str, data: dict):
 
 @app.delete("/delete-chat/{chat_id}")
 async def delete_chat(chat_id: str):
-    """Delete a chat"""
+    """Delete a chat thread (Supabase)."""
     try:
-        chats_collection.delete(ids=[chat_id])
+        res = database.delete_chat(chat_id)
+        if res["status"] != "success":
+            return {"status": "error", "error": res["error"]}
         return {"status": "success"}
     except Exception as e:
         print(f"Delete chat error: {str(e)}")
@@ -3427,32 +3540,14 @@ async def delete_chat(chat_id: str):
 
 @app.put("/rename-chat/{chat_id}")
 async def rename_chat(chat_id: str, data: dict):
-    """Rename a chat"""
+    """Rename a chat thread (Supabase)."""
     try:
         new_title = data.get("title", "Chat")
-        now = datetime.now().isoformat()
-        
-        # Get existing data
-        existing = chats_collection.get(ids=[chat_id])
-        if not existing['ids']:
-            return {"status": "error", "error": "Chat not found"}
-        
-        old_doc = existing['documents'][0]
-        old_metadata = existing['metadatas'][0]
-        
-        chats_collection.update(
-            documents=[old_doc],
-            metadatas=[{
-                "user_id": old_metadata.get('user_id', 'default'),  # keep owner
-                "title": new_title[:50],
-                "created_at": old_metadata.get('created_at', now),
-                "updated_at": now
-            }],
-            ids=[chat_id]
-        )
-        
+        res = database.update_chat(chat_id, title=new_title[:50])
+        if res["status"] != "success":
+            return {"status": "error", "error": res["error"]}
         return {"status": "success"}
-        
+
     except Exception as e:
         print(f"Rename chat error: {str(e)}")
         return {"status": "error", "error": str(e)}
@@ -3545,21 +3640,21 @@ async def submit_onboarding(data: dict):
         sender_domains = data.get("sender_domains", []) or []
         country = data.get("country", "")
 
-        existing = users_collection.get(ids=[user_id])
-        if not existing["ids"]:
+        existing = database.get_user_by_id(user_id)
+        if existing["status"] != "success" or not existing["data"]:
             return {"status": "error", "data": None, "error": "User not found"}
 
-        meta = dict(existing["metadatas"][0] or {})
-        meta.update({
-            "business_type": business_type,
-            "country": country,
-            "selected_bank": selected_bank,
-            # ChromaDB metadata values must be scalars, so store domains as CSV.
-            "sender_domains": ",".join(sender_domains),
-            "status": "ACTIVE_CFO",
-            "onboarded_at": datetime.now().isoformat(),
-        })
-        users_collection.update(ids=[user_id], metadatas=[meta])
+        updated = database.update_user(
+            user_id,
+            business_type=business_type,
+            country=country,
+            selected_bank=selected_bank,
+            # Supabase sender_domains is jsonb, so keep the real array (no CSV hack).
+            sender_domains=sender_domains,
+            status="ACTIVE_CFO",
+        )
+        if updated["status"] != "success":
+            return {"status": "error", "data": None, "error": updated["error"]}
 
         print(f"[Onboarding] Profile committed for {user_id}: {business_type} / {selected_bank}")
         return {
@@ -3570,6 +3665,56 @@ async def submit_onboarding(data: dict):
     except Exception as e:
         print(f"[Onboarding] submit_onboarding error: {e}")
         return {"status": "error", "data": None, "error": str(e)}
+
+
+@app.post("/link-whatsapp")
+async def link_whatsapp(data: dict):
+    """Link a WhatsApp number to a Loamy account so the WhatsApp advisor can
+    resolve incoming messages to the right user (and see their real balance).
+
+    Stores the number digits-only on the user's row. ensure_user first so this
+    works even for accounts not yet mirrored into Supabase.
+    """
+    try:
+        user_id = data.get("user_id")
+        phone = data.get("phone_number") or data.get("phone") or ""
+        if not user_id:
+            return {"status": "error", "error": "user_id is required"}
+
+        digits = database.normalize_phone(phone)
+        if len(digits) < 7:
+            return {"status": "error", "error": "Please enter a valid WhatsApp number with country code."}
+
+        # Make sure the user row exists, then save the normalized number.
+        database.ensure_user(user_id)
+
+        # Prevent linking the same number to two accounts.
+        clash = database.get_user_by_phone(digits)
+        if (clash["status"] == "success" and clash["data"]
+                and clash["data"].get("user_id") != user_id):
+            return {"status": "error", "error": "This WhatsApp number is already linked to another account."}
+
+        updated = database.update_user(user_id, phone_number=digits)
+        if updated["status"] != "success":
+            return {"status": "error", "error": updated["error"]}
+
+        print(f"[WhatsApp] Linked number {digits} -> {user_id}")
+        return {"status": "success", "data": {"user_id": user_id, "phone_number": digits}, "error": None}
+    except Exception as e:
+        print(f"[WhatsApp] link_whatsapp error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/whatsapp-link-status")
+async def whatsapp_link_status(user_id: str):
+    """Return whether this account has a WhatsApp number linked (for the UI)."""
+    try:
+        res = database.get_user_by_id(user_id)
+        row = res.get("data") if res.get("status") == "success" else None
+        phone = (row or {}).get("phone_number") or ""
+        return {"status": "success", "linked": bool(phone), "phone_number": phone}
+    except Exception as e:
+        return {"status": "error", "linked": False, "error": str(e)}
 
 
 @app.post("/signup")
@@ -3590,28 +3735,49 @@ async def signup(data: dict):
         if "@" not in email or "." not in email:
             raise HTTPException(status_code=400, detail="Invalid email address")
         
-        # Check if user already exists
-        existing_users = users_collection.get()
-        for i in range(len(existing_users['ids'])):
-            if existing_users['metadatas'][i].get('email') == email:
+        # Check if user already exists (Supabase-backed)
+        existing = database.get_user_by_email(email)
+        existing_row = existing["data"] if existing["status"] == "success" else None
+        if existing_row:
+            if existing_row.get("password_hash"):
+                # A real password is already set on this email - genuine duplicate.
                 raise HTTPException(status_code=400, detail="An account with this email already exists")
-        
-        # Create user
+
+            # This email was only ever registered via Google Sign-In (blank
+            # password_hash), so email/password login could never work for it.
+            # Treat this "signup" as setting a password on that same account
+            # instead of blocking the user with a duplicate-email error.
+            password_hash = hash_password(password)
+            updated = database.update_user(
+                existing_row["user_id"],
+                password_hash=password_hash,
+                full_name=name or existing_row.get("full_name"),
+            )
+            if updated["status"] != "success":
+                raise HTTPException(status_code=500, detail=updated["error"])
+
+            print(f"Password set for existing Google account: {email} (ID: {existing_row['user_id']})")
+            return {
+                "status": "success",
+                "user_id": existing_row["user_id"],
+                "email": email,
+                "name": name or existing_row.get("full_name"),
+            }
+
+        # Create user in Supabase
         user_id = f"user_{secrets.token_hex(8)}"
         password_hash = hash_password(password)
-        
-        users_collection.add(
-            documents=[f"User: {name} ({email})"],
-            metadatas=[{
-                "user_id": user_id,
-                "name": name,
-                "email": email,
-                "password_hash": password_hash,
-                "created_at": datetime.now().isoformat()
-            }],
-            ids=[user_id]
+
+        created = database.create_user(
+            user_id=user_id,
+            email=email,
+            password_hash=password_hash,
+            full_name=name,
+            created_at_original=datetime.now().isoformat(),
         )
-        
+        if created["status"] != "success":
+            raise HTTPException(status_code=500, detail=created["error"])
+
         print(f"New user created: {email} (ID: {user_id})")
         
         return {
@@ -3638,30 +3804,34 @@ async def login(data: dict):
         if not email or not password:
             raise HTTPException(status_code=400, detail="Email and password are required")
         
-        # Find user by email
-        all_users = users_collection.get()
-        user_found = None
-        
-        for i in range(len(all_users['ids'])):
-            meta = all_users['metadatas'][i]
-            if meta.get('email') == email:
-                user_found = meta
-                break
-        
+        # Find user by email (Supabase-backed)
+        lookup = database.get_user_by_email(email)
+        user_found = lookup["data"] if lookup["status"] == "success" else None
+
         if not user_found:
             raise HTTPException(status_code=401, detail="Invalid email or password")
-        
+
+        # This account was only ever registered via Google Sign-In, so it has no
+        # password to check against - a plain "invalid password" would be
+        # misleading since no password could ever match. Point them to the fix.
+        if not user_found.get('password_hash'):
+            raise HTTPException(
+                status_code=401,
+                detail="This account was created with Google Sign-In and has no password yet. "
+                       "Use \"Continue with Google\", or go to Sign Up with this same email to set one.",
+            )
+
         # Verify password
         if not verify_password(password, user_found.get('password_hash', '')):
             raise HTTPException(status_code=401, detail="Invalid email or password")
-        
+
         print(f"User logged in: {email}")
-        
+
         return {
             "status": "success",
             "user_id": user_found.get('user_id'),
             "email": user_found.get('email'),
-            "name": user_found.get('name')
+            "name": user_found.get('full_name'),
         }
         
     except HTTPException:
@@ -3675,20 +3845,17 @@ async def login(data: dict):
 async def check_session(user_id: str):
     """Verify if a user session is valid"""
     try:
-        all_users = users_collection.get()
-        
-        for i in range(len(all_users['ids'])):
-            if all_users['ids'][i] == user_id:
-                meta = all_users['metadatas'][i]
-                return {
-                    "status": "valid",
-                    "user_id": user_id,
-                    "email": meta.get('email'),
-                    "name": meta.get('name')
-                }
-        
+        lookup = database.get_user_by_id(user_id)
+        meta = lookup["data"] if lookup["status"] == "success" else None
+        if meta:
+            return {
+                "status": "valid",
+                "user_id": user_id,
+                "email": meta.get('email'),
+                "name": meta.get('full_name'),
+            }
         return {"status": "invalid"}
-        
+
     except Exception as e:
         print(f"Check Session Error: {str(e)}")
         return {"status": "error", "error": str(e)}
@@ -3748,51 +3915,56 @@ async def google_auth(data: dict):
         
         if not email:
             return {"status": "error", "error": "Could not get email from Google"}
-        
-        # Check if user exists
-        existing_users = users_collection.get()
-        user_found = None
-        
-        for i in range(len(existing_users['ids'])):
-            if existing_users['metadatas'][i].get('email') == email:
-                user_found = existing_users['metadatas'][i]
-                break
-        
+
+        # Supabase `users` is the ONE identity table every other table (chats,
+        # gmail_data, accounts) has a foreign key to - so Google Sign-In must
+        # look up/create the account there directly, exactly like /signup and
+        # /login already do. (Previously this checked an in-memory ChromaDB
+        # collection instead, which could hand back a user_id Supabase had
+        # never heard of, causing every "insert" for that account to fail with
+        # a foreign-key error - the "chats not showing" / "can't chat" bug.)
+        lookup = database.get_user_by_email(email)
+        user_found = lookup["data"] if lookup["status"] == "success" else None
+
         if user_found:
-            # User exists - log them in
+            existing_uid = user_found["user_id"]
             print(f"Google Sign-In: Existing user {email}")
-            return {
-                "status": "success",
-                "user_id": user_found.get('user_id'),
-                "email": user_found.get('email'),
-                "name": user_found.get('name')
-            }
-        else:
-            # New user - create account
-            user_id = f"user_{secrets.token_hex(8)}"
-            
-            users_collection.add(
-                documents=[f"User: {name} ({email})"],
-                metadatas=[{
-                    "user_id": user_id,
-                    "name": name,
-                    "email": email,
-                    "password_hash": "",  # No password for Google users
-                    "auth_provider": "google",
-                    "created_at": datetime.now().isoformat()
-                }],
-                ids=[user_id]
+            updated = database.update_user(
+                existing_uid,
+                full_name=name or user_found.get("full_name"),
             )
-            
-            print(f"Google Sign-In: New user created {email} (ID: {user_id})")
-            
+            if updated["status"] != "success":
+                return {"status": "error", "error": updated["error"]}
             return {
                 "status": "success",
-                "user_id": user_id,
+                "user_id": existing_uid,
                 "email": email,
-                "name": name
+                "name": name or user_found.get("full_name"),
+                "is_new_user": False
             }
-            
+
+        # New user - create the account directly in Supabase.
+        user_id = f"user_{secrets.token_hex(8)}"
+        created = database.create_user(
+            user_id=user_id,
+            email=email,
+            password_hash="",  # No password for Google-only accounts.
+            full_name=name,
+            created_at_original=datetime.now().isoformat(),
+        )
+        if created["status"] != "success":
+            return {"status": "error", "error": created["error"]}
+
+        print(f"Google Sign-In: New user created {email} (ID: {user_id})")
+
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "email": email,
+            "name": name,
+            "is_new_user": True
+        }
+
     except Exception as e:
         print(f"Google Auth Error: {str(e)}")
         return {"status": "error", "error": str(e)}
@@ -3920,15 +4092,15 @@ async def store_gmail_credentials(data: dict):
         if not user_id or not refresh_token:
             return {"status": "error", "data": None, "error": "user_id and refresh_token are required"}
 
-        cid = f"cred_{user_id}"
-        meta = {"user_id": user_id, "refresh_token": refresh_token, "updated_at": datetime.now().isoformat()}
-        existing = gmail_credentials_collection.get(ids=[cid])
-        if existing["ids"]:
-            gmail_credentials_collection.update(ids=[cid], metadatas=[meta])
-        else:
-            gmail_credentials_collection.add(
-                ids=[cid], documents=[f"Gmail credentials for {user_id}"], metadatas=[meta]
-            )
+        saved = database.save_gmail_credentials(
+            user_id=user_id,
+            refresh_token=refresh_token,
+            access_token=data.get("access_token"),
+            token_expiry=data.get("token_expiry"),
+            sender_domains=data.get("sender_domains"),
+        )
+        if saved["status"] != "success":
+            return {"status": "error", "data": None, "error": saved["error"]}
         print(f"[Server Sync] Stored refresh token for {user_id}")
         return {"status": "success", "data": {"user_id": user_id}, "error": None}
     except Exception as e:
@@ -3939,9 +4111,9 @@ async def store_gmail_credentials(data: dict):
 def _get_stored_refresh_token(user_id):
     """Return the stored refresh token for a user, or None."""
     try:
-        res = gmail_credentials_collection.get(ids=[f"cred_{user_id}"])
-        if res["ids"]:
-            return (res["metadatas"][0] or {}).get("refresh_token")
+        res = database.get_gmail_credentials(user_id)
+        if res["status"] == "success" and res["data"]:
+            return res["data"].get("refresh_token")
     except Exception as e:
         print(f"[Server Sync] Could not read credentials for {user_id}: {e}")
     return None
@@ -4029,12 +4201,46 @@ async def run_server_side_gmail_sync(user_id, force=False):
         return {"synced": False, "reason": str(e)}
 
 
+_active_bg_syncs = set()
+_active_bg_syncs_lock = threading.Lock()
+
+
+def spawn_background_sync(user_id, force=False):
+    """Run the (blocking) server-side Gmail sync on a dedicated daemon thread.
+
+    run_server_side_gmail_sync is async, but internally it makes BLOCKING network
+    calls (refresh-token mint via requests.post, Gmail fetch) plus synchronous
+    ChromaDB writes. Scheduling it with asyncio.create_task() ran it on the SAME
+    single event loop that serves every HTTP request, so while a sync was in
+    flight the whole server was frozen - that is why /get-chats hung on
+    "Loading chats..." and the dashboard sat at 40s+. Running it on a separate
+    daemon thread (with its own event loop via asyncio.run) keeps that work
+    entirely off the request path. The in-flight guard stops overlapping dashboard
+    loads from stacking duplicate syncs for the same user.
+    """
+    with _active_bg_syncs_lock:
+        if user_id in _active_bg_syncs:
+            return
+        _active_bg_syncs.add(user_id)
+
+    def _runner():
+        try:
+            asyncio.run(run_server_side_gmail_sync(user_id, force=force))
+        except Exception as e:
+            print(f"[Server Sync] background thread error for {user_id}: {e}")
+        finally:
+            with _active_bg_syncs_lock:
+                _active_bg_syncs.discard(user_id)
+
+    threading.Thread(target=_runner, daemon=True, name=f"gmailsync-{user_id}").start()
+
+
 async def maybe_autosync_all_users(force=False):
     """Run a throttled server-side sync for every user with stored credentials."""
     try:
-        creds = gmail_credentials_collection.get()
-        for meta in creds.get("metadatas", []) or []:
-            uid = (meta or {}).get("user_id")
+        creds = database.get_all_gmail_credentials()
+        for row in (creds.get("data") or []):
+            uid = (row or {}).get("user_id")
             if uid:
                 await run_server_side_gmail_sync(uid, force=force)
     except Exception as e:
@@ -4047,6 +4253,31 @@ async def trigger_server_sync(data: dict):
     user_id = data.get("user_id", "default")
     result = await run_server_side_gmail_sync(user_id, force=True)
     return {"status": "success", "data": result, "error": None}
+
+
+@app.get("/gmail/status/{user_id}")
+async def gmail_connection_status(user_id: str):
+    """Report whether a user's Gmail is connected, reading creds from Supabase.
+    'Connected' means we hold a refresh token the backend can auto-sync with."""
+    try:
+        res = database.get_gmail_credentials(user_id)
+        if res["status"] != "success":
+            return {"status": "error", "data": None, "error": res["error"]}
+        cred = res["data"]
+        connected = bool(cred and cred.get("refresh_token"))
+        return {
+            "status": "success",
+            "data": {
+                "connected": connected,
+                "sender_domains": (cred or {}).get("sender_domains") or [],
+                "token_expiry": (cred or {}).get("token_expiry"),
+                "updated_at": (cred or {}).get("updated_at"),
+            },
+            "error": None,
+        }
+    except Exception as e:
+        print(f"[Server Sync] gmail status error for {user_id}: {e}")
+        return {"status": "error", "data": None, "error": str(e)}
 
 
 # ============================================
@@ -5334,27 +5565,33 @@ async def sync_gmail_data(data: dict):
             }],
             ids=[doc_id]
         )
-        
+
+        # Mirror the same blob into Supabase `gmail_data` so it stops being empty
+        # and the data survives outside the local ChromaDB vault. Best-effort:
+        # a Supabase hiccup must never break the (working) ChromaDB sync above.
+        try:
+            mirror = database.save_gmail_data(user_id, emails, stats)
+            if mirror["status"] != "success":
+                print(f"[sync-gmail] Supabase mirror failed: {mirror['error']}")
+        except Exception as e:
+            print(f"[sync-gmail] Supabase mirror exception: {e}")
+
         print(
             f"Gmail data synced for user {user_id}: {new_count} new, "
             f"{len(emails)} total stored ({len(incoming_emails)} received this sync)"
         )
         
-        # Extract bank alerts for balance verification
+        # Report the balance via the SHARED snapshot so the greeting the
+        # frontend shows matches the dashboard and chat exactly (chronological
+        # pick by internal_date_ms, not a fragile date-string sort).
         bank_alerts = [e for e in emails if e.get("is_bank_alert")]
-        bank_balance = None
-        if bank_alerts:
-            # Get most recent bank alert with balance
-            for alert in sorted(bank_alerts, key=lambda x: x.get('date', ''), reverse=True):
-                if alert.get("balance"):
-                    bank_balance = alert.get("balance")
-                    break
-        
+        snap = compute_bank_snapshot(user_id)
+
         return {
-            "status": "success", 
+            "status": "success",
             "synced": len(emails),
             "bank_alerts_found": len(bank_alerts),
-            "latest_bank_balance": bank_balance
+            "latest_bank_balance": snap["balance"]
         }
         
     except Exception as e:
@@ -5398,29 +5635,23 @@ async def verify_balance(data: dict):
         last_alert_date = None
         
         try:
-            gmail_data = gmail_data_collection.get(ids=[f"gmail_{user_id}"])
-            if gmail_data and gmail_data['documents']:
-                email_data = json.loads(gmail_data['documents'][0])
-                emails = email_data.get('emails', [])
-                
-                # Find most recent bank alert with balance
-                bank_alerts = [e for e in emails if e.get("is_bank_alert") and e.get("balance")]
-                if bank_alerts:
-                    latest_alert = max(bank_alerts, key=lambda x: x.get('date', ''))
-                    bank_balance = latest_alert.get("balance")
-                    bank_name = latest_alert.get("bank_name")
-                    last_alert_date = latest_alert.get("date")
+            # Use the shared snapshot so the "bank truth" balance here matches
+            # the dashboard and chat exactly (chronological pick, summed per bank).
+            snap = compute_bank_snapshot(user_id)
+            if snap.get("alert_count", 0) > 0:
+                bank_balance = snap["balance"]
+                bank_name = snap.get("bank_name")
+                last_alert_date = snap.get("last_date")
         except Exception as e:
             print(f"Error getting Gmail data: {e}")
         
-        # 2. Calculate internal balance from accounts
+        # 2. Calculate internal balance from accounts (Supabase, user-scoped)
         internal_balance = 0
         try:
-            accounts_data = accounts_collection.get(where={"user_id": user_id})
-            if accounts_data and accounts_data['documents']:
-                for doc in accounts_data['documents']:
-                    account = json.loads(doc)
-                    internal_balance += account.get("balance", 0)
+            acct_res = database.get_accounts(user_id)
+            if acct_res["status"] == "success":
+                for account in acct_res["data"]:
+                    internal_balance += float(account.get("balance", 0) or 0)
         except Exception as e:
             print(f"Error getting accounts: {e}")
         
@@ -5442,25 +5673,19 @@ async def verify_balance(data: dict):
         # 4. Get unverified transactions (bank alerts not matched to manual entries)
         unverified_transactions = []
         try:
-            gmail_data = gmail_data_collection.get(ids=[f"gmail_{user_id}"])
-            if gmail_data and gmail_data['documents']:
-                email_data = json.loads(gmail_data['documents'][0])
-                emails = email_data.get('emails', [])
-                
-                for email in emails:
-                    if email.get("is_bank_alert") and email.get("amount"):
-                        # Check if this transaction exists in manual logs
-                        # For now, mark all bank alerts as needing potential review
-                        unverified_transactions.append({
-                            "date": email.get("date"),
-                            "amount": email.get("amount"),
-                            "type": email.get("transaction_type"),
-                            "narration": email.get("narration"),
-                            "bank": email.get("bank_name"),
-                            "is_verified": False  # TODO: Match against manual entries
-                        })
-        except:
-            pass
+            for email in load_user_emails(user_id):
+                if email.get("is_bank_alert") and email.get("amount"):
+                    # For now, mark all bank alerts as needing potential review.
+                    unverified_transactions.append({
+                        "date": email.get("date"),
+                        "amount": email.get("amount"),
+                        "type": email.get("transaction_type"),
+                        "narration": email.get("narration"),
+                        "bank": email.get("bank_name"),
+                        "is_verified": False  # TODO: Match against manual entries
+                    })
+        except Exception as e:
+            print(f"Error loading unverified transactions: {e}")
         
         return {
             "status": "success",
@@ -5489,14 +5714,12 @@ async def verify_balance(data: dict):
 async def get_bank_transactions(user_id: str):
     """Get all bank transactions extracted from Gmail for a user"""
     try:
-        gmail_data = gmail_data_collection.get(ids=[f"gmail_{user_id}"])
-        
-        if not gmail_data or not gmail_data['documents']:
+        # Supabase-primary loader (ChromaDB fallback) - same source as the
+        # dashboard/chat so this endpoint can't drift out of sync.
+        emails = load_user_emails(user_id)
+        if not emails:
             return {"status": "success", "transactions": [], "summary": {}}
-        
-        email_data = json.loads(gmail_data['documents'][0])
-        emails = email_data.get('emails', [])
-        
+
         # Filter bank alerts
         bank_transactions = []
         total_credits = 0

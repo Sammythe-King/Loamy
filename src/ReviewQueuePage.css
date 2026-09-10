@@ -1,5 +1,56 @@
 /* Review Queue Page styles - matches Loamy green theme */
 
+/* Sleek branded loader (shared visual language with the dashboard loader).
+   An indeterminate progress bar reads as active work far better than a
+   spinning circle. */
+.loamy-loader {
+  width: min(360px, 78vw);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  margin: 40px auto;
+}
+
+.loamy-loader-bar {
+  position: relative;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: #e6efe6;
+  overflow: hidden;
+}
+
+.loamy-loader-bar span {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 40%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #2E7D32, #66bb6a);
+  animation: loamy-indeterminate 1.15s ease-in-out infinite;
+}
+
+@keyframes loamy-indeterminate {
+  0%   { left: -42%; width: 42%; }
+  50%  { left: 28%;  width: 56%; }
+  100% { left: 100%; width: 42%; }
+}
+
+.loamy-loader-text {
+  margin: 0;
+  color: #4b7a4e;
+  font-size: 0.92rem;
+  font-weight: 500;
+  animation: loamy-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes loamy-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+
 .menu-badge {
   margin-left: auto;
   background: #d32f2f;

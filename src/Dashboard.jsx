@@ -19,6 +19,102 @@ const getSessionUserId = () => {
   }
 };
 
+// WhatsApp connect card: links the user's WhatsApp number to their account so
+// the WhatsApp advisor resolves to THIS user (and sees their real balance).
+// Self-contained (its own fetch/state) so it doesn't touch dashboard data flow.
+const WhatsAppConnect = () => {
+  const [linked, setLinked] = useState(false);
+  const [phone, setPhone] = useState("");
+  const [saved, setSaved] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const userId = getSessionUserId();
+
+  useEffect(() => {
+    let alive = true;
+    fetch(`${API_URL}/whatsapp-link-status?user_id=${encodeURIComponent(userId)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!alive) return;
+        if (d.status === "success" && d.linked) {
+          setLinked(true);
+          setSaved(d.phone_number || "");
+        }
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [userId]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setMsg("");
+    try {
+      const res = await fetch(`${API_URL}/link-whatsapp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId, phone_number: phone }),
+      });
+      const d = await res.json();
+      if (d.status === "success") {
+        setLinked(true);
+        setSaved(d.data?.phone_number || phone);
+        setMsg("Connected! Message your Loamy WhatsApp number to try it.");
+      } else {
+        setMsg(d.error || "Could not link that number.");
+      }
+    } catch {
+      setMsg("Network error. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card whatsapp-card">
+      <div className="card-header">
+        <i className="fa-brands fa-whatsapp" style={{ color: "#25D366" }}></i>
+        <h3>Connect WhatsApp</h3>
+      </div>
+      {linked ? (
+        <div className="whatsapp-linked">
+          <p>
+            <i className="fa-solid fa-circle-check" style={{ color: "#2E7D32" }}></i>{" "}
+            Linked to <strong>+{saved}</strong>. Your WhatsApp advisor now sees this account.
+          </p>
+          <button
+            className="whatsapp-relink-btn"
+            onClick={() => { setLinked(false); setPhone(saved); setMsg(""); }}
+          >
+            Change number
+          </button>
+        </div>
+      ) : (
+        <form className="whatsapp-form" onSubmit={submit}>
+          <p className="whatsapp-help">
+            Enter your WhatsApp number with country code so the advisor knows it&apos;s you.
+          </p>
+          <div className="whatsapp-input-row">
+            <input
+              type="tel"
+              inputMode="tel"
+              placeholder="e.g. 2349049661994"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              className="whatsapp-input"
+            />
+            <button type="submit" className="whatsapp-link-btn" disabled={busy}>
+              {busy ? "Linking..." : "Link"}
+            </button>
+          </div>
+        </form>
+      )}
+      {msg && <p className="whatsapp-msg">{msg}</p>}
+    </div>
+  );
+};
+
 // Progress Bar Component
 const ProgressBar = ({ value }) => {
   return (
@@ -174,6 +270,7 @@ const Dashboard = () => {
   const [invoiceSummary, setInvoiceSummary] = useState({ total_unpaid: 0, total_paid: 0, unpaid_count: 0, paid_count: 0 });
   // True while a manual "Refresh Data" sync is pulling fresh Gmail data.
   const [refreshing, setRefreshing] = useState(false);
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
 
   useEffect(() => {
     fetchDashboardData();
@@ -238,8 +335,12 @@ const Dashboard = () => {
   };
 
   const fetchDashboardData = async () => {
+    // NOTE: `loading` is only ever set to true by its initial useState(true) - it
+    // is intentionally not set back to true here. This function also re-runs on
+    // the "loamy:data-synced" background event and after categorizing a single
+    // transaction; re-arming the full-page spinner on those silent refreshes was
+    // wiping out the whole dashboard the user was already looking at.
     try {
-      setLoading(true);
       const response = await fetch(`${API_URL}/get-dashboard-data?user_id=${encodeURIComponent(getSessionUserId())}`);
       const data = await response.json();
       
@@ -257,8 +358,24 @@ const Dashboard = () => {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = () => setShowLogoutModal(true);
+
+  const confirmLogout = async () => {
+    // Purge this user's server-side Gmail blob first (best-effort) so the next
+    // account on this browser can't inherit their transactions, then wipe all
+    // local storage and return to the login screen.
+    const userId = getSessionUserId();
+    try {
+      await fetch(`${API_URL}/clear-gmail-data`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId }),
+      });
+    } catch (e) {
+      console.error("Clear gmail on logout failed:", e);
+    }
     localStorage.clear();
+    setShowLogoutModal(false);
     navigate("/");
   };
 
@@ -266,7 +383,9 @@ const Dashboard = () => {
     navigate(path);
   };
 
-  const { cash_flow, expense_breakdown, recent_transactions, bank_transactions = [], needs_review = [], goals, summary } = dashboardData;
+  // `goals` still comes back from the API (backend untouched) but the
+  // Savings & Goals UI is hidden for now, so it's intentionally not destructured.
+  const { cash_flow, expense_breakdown, recent_transactions, bank_transactions = [], needs_review = [], summary } = dashboardData;
   
   // Categorize a transaction that needs review
   const categorizeTransaction = async (transactionId, category) => {
@@ -301,8 +420,13 @@ const Dashboard = () => {
   if (loading) {
     return (
       <div className="dashboard-loading">
-        <div className="loading-spinner"></div>
-        <p>Loading your financial overview...</p>
+        <div className="loamy-loader">
+          <div className="loamy-loader-brand">Loamy</div>
+          <div className="loamy-loader-bar" role="progressbar" aria-label="Loading your financial overview">
+            <span />
+          </div>
+          <p className="loamy-loader-text">Loading your financial overview...</p>
+        </div>
       </div>
     );
   }
@@ -318,10 +442,6 @@ const Dashboard = () => {
           <button onClick={() => handleNavigation("/gmail-connect")} className="nav-btn">
             <i className="fa-regular fa-envelope"></i>
             <span>Gmail</span>
-          </button>
-          <button onClick={() => handleNavigation("/goals")} className="nav-btn">
-            <i className="fa-solid fa-bullseye"></i>
-            <span>Goals</span>
           </button>
           <button onClick={() => handleNavigation("/chat")} className="nav-btn">
             <i className="fa-solid fa-comments"></i>
@@ -342,6 +462,9 @@ const Dashboard = () => {
 
       {/* In-app notifications (e.g. the daily 5 PM invoice reminder) */}
       <NotificationBanner userId={getSessionUserId()} />
+
+      {/* WhatsApp linking (maps the user's phone to this account) */}
+      <WhatsAppConnect />
 
       {/* Main Content Grid */}
       <div className="dashboard-grid">
@@ -575,36 +698,6 @@ const Dashboard = () => {
         )}
       </div>
 
-      {/* Savings Goals — moved to a full-width row beneath bank activity & review */}
-      <div className="card goals-card goals-row">
-        <div className="card-header">
-          <i className="fa-solid fa-bullseye" style={{ color: "#E63946" }}></i>
-          <h3>Savings Goals</h3>
-        </div>
-        {goals.length > 0 ? (
-          <div className="goals-list">
-            {goals.slice(0, 4).map((goal, index) => (
-              <div key={index} className="goal-item">
-                <div className="goal-info">
-                  <span className="goal-name">{goal.name}</span>
-                  <span className="goal-progress-text">
-                    {formatCurrency(goal.assigned)} / {formatCurrency(goal.target)}
-                  </span>
-                </div>
-                <ProgressBar value={goal.progress} />
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="empty-state">
-            <p>No savings goals set yet.</p>
-            <button onClick={() => handleNavigation("/goals")} className="action-btn">
-              Set Goals
-            </button>
-          </div>
-        )}
-      </div>
-
       {/* Quick Actions */}
       <div className="quick-actions">
         <button onClick={() => handleNavigation("/chat")} className="quick-action-btn primary">
@@ -616,6 +709,32 @@ const Dashboard = () => {
           {refreshing ? "Refreshing..." : "Refresh Data"}
         </button>
       </div>
+
+      {showLogoutModal && (
+        <div
+          className="logout-modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="dashboard-logout-title"
+          onClick={() => setShowLogoutModal(false)}
+        >
+          <div className="logout-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="logout-modal-icon">
+              <i className="fa-solid fa-right-from-bracket"></i>
+            </div>
+            <h3 id="dashboard-logout-title">Log out of Loamy?</h3>
+            <p>You&apos;ll need to sign back in to access your dashboard, chats, and financial data.</p>
+            <div className="logout-modal-actions">
+              <button type="button" className="logout-modal-cancel" onClick={() => setShowLogoutModal(false)}>
+                Cancel
+              </button>
+              <button type="button" className="logout-modal-confirm" onClick={confirmLogout}>
+                Log Out
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

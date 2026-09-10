@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
-  faChartPie, faBullseye, faComment, faFileInvoiceDollar,
+  faChartPie, faComment, faFileInvoiceDollar,
   faListCheck, faPaperPlane, faCheckCircle
 } from "@fortawesome/free-solid-svg-icons";
 import {
@@ -44,8 +44,13 @@ const ReviewQueuePage = () => {
   const [submittingId, setSubmittingId] = useState(null);
   const [resolvedNote, setResolvedNote] = useState(null);
 
-  const loadQueue = useCallback(async () => {
-    setLoading(true);
+  // isInitial=true shows the full-page "Loading..." state (first mount only).
+  // The 30s poll below reuses this same function to pick up new nudges, but
+  // must NOT re-arm that full-page loading state - doing so wiped the whole
+  // list back to a blank "Loading..." screen every 30 seconds, which is why
+  // the page looked stuck.
+  const loadQueue = useCallback(async (isInitial = false) => {
+    if (isInitial) setLoading(true);
     setError(null);
     try {
       const res = await fetchReviewQueue(userId);
@@ -58,13 +63,13 @@ const ReviewQueuePage = () => {
     } catch {
       setError("Network error. Please try again.");
     } finally {
-      setLoading(false);
+      if (isInitial) setLoading(false);
     }
   }, [userId]);
 
   useEffect(() => {
-    loadQueue();
-    const interval = setInterval(loadQueue, 30000);
+    loadQueue(true);
+    const interval = setInterval(() => loadQueue(false), 30000);
     return () => clearInterval(interval);
   }, [loadQueue]);
 
@@ -121,9 +126,8 @@ const ReviewQueuePage = () => {
   };
 
   const handleSeedDemo = async () => {
-    setLoading(true);
     await seedDemoReview(userId, userName);
-    await loadQueue();
+    await loadQueue(true);
   };
 
   const count = items.length;
@@ -142,10 +146,6 @@ const ReviewQueuePage = () => {
             <Link to="/spending" className="menu-item">
               <FontAwesomeIcon icon={faChartPie} />
               <span>Spending Analysis</span>
-            </Link>
-            <Link to="/goals" className="menu-item">
-              <FontAwesomeIcon icon={faBullseye} />
-              <span>Savings Goals</span>
             </Link>
             <Link to="/chat" className="menu-item">
               <FontAwesomeIcon icon={faComment} />
@@ -179,7 +179,16 @@ const ReviewQueuePage = () => {
           </div>
         )}
 
-        {loading && <div className="rq-state">Loading...</div>}
+        {loading && (
+          <div className="rq-state">
+            <div className="loamy-loader">
+              <div className="loamy-loader-bar" role="progressbar" aria-label="Loading review queue">
+                <span />
+              </div>
+              <p className="loamy-loader-text">Loading your financial review...</p>
+            </div>
+          </div>
+        )}
 
         {error && !loading && <div className="rq-state rq-error">{error}</div>}
 

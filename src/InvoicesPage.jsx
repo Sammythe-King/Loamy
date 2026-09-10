@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { 
-  faChartPie, faBullseye, faComment, faFileInvoiceDollar, faPlus,
+  faChartPie, faComment, faFileInvoiceDollar, faPlus,
   faCheck, faTrash, faClock, faCheckCircle, faListCheck
 } from "@fortawesome/free-solid-svg-icons";
 import "./InvoicesPage.css";
@@ -126,10 +126,6 @@ const InvoicesPage = () => {
             <Link to="/spending" className="menu-item">
               <FontAwesomeIcon icon={faChartPie} />
               <span>Spending Analysis</span>
-            </Link>
-            <Link to="/goals" className="menu-item">
-              <FontAwesomeIcon icon={faBullseye} />
-              <span>Savings Goals</span>
             </Link>
             <Link to="/chat" className="menu-item">
               <FontAwesomeIcon icon={faComment} />

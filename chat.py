@@ -5,12 +5,18 @@ Chat History Management - Endpoints for saving and retrieving chat conversations
 from fastapi import APIRouter, HTTPException
 import chromadb
 import os
+import json
+import secrets
 from datetime import datetime
+
+import database  # Supabase data-access layer (now the source of truth for chats)
 
 # Create router for chat endpoints
 router = APIRouter()
 
-# Use the same datbase path as main.py
+# ChromaDB is kept ONLY for the legacy one-time migration endpoints below
+# (migrate-history reads old goals from the vault). All live chat CRUD now
+# reads/writes Supabase via database.py.
 db_path = os.path.join(os.path.dirname(__file__), "..", "fintech_ai_vault_hidden")
 client = chromadb.PersistentClient(path=db_path)
 chats_collection = client.get_or_create_collection(name="user_chats")
@@ -32,7 +38,7 @@ def generate_chat_title(first_message):
     if len(text) < 5 or text_lower in ['yes', 'no', 'ok', 'okay', 'sure']:
         return 'Financial Consultation'
     
-    # Try to extract specific item bfor goals/savings
+    # Try to extract specific item for goals/savings
     # Pattern: "save for [item]", "goal for [item]", "want [item]", "buy [item]", "get [item]"
     item_patterns = [
         r'(?:save|saving|goal)\s+(?:for|to\s+(?:buy|get))?\s*(?:a|an|the)?\s*(.+?)(?:\s+by|\s+until|\s+for\s+\$|\?|$)',
@@ -161,25 +167,24 @@ def generate_goal_title(item, amount):
 
 
 @router.get("/get-chats")
-async def get_chats():
-    """Get all saved chat conversations"""
+async def get_chats(user_id: str = "default"):
+    """Get a user's saved chat conversations from Supabase (sidebar list)."""
     try:
-        results = chats_collection.get()
+        res = database.get_chats(user_id)
+        if res["status"] != "success":
+            return {"chats": [], "error": res["error"]}
+
         chats = []
-        
-        for i in range(len(results['ids'])):
-            meta = results['metadatas'][i]
+        for row in res["data"]:
+            messages = row.get("messages") or []
             chats.append({
-                "id": results['ids'][i],
-                "title": meta.get('title', 'Untitled Chat'),
-                "created_at": meta.get('created_at', ''),
-                "updated_at": meta.get('updated_at', ''),
-                "message_count": meta.get('message_count', 0)
+                "id": row["id"],
+                "title": row.get("title", "Untitled Chat"),
+                "created_at": row.get("created_at", ""),
+                "updated_at": row.get("updated_at", ""),
+                "message_count": len(messages),
             })
-        
-        # Sort by updated_at (most recent first)
-        chats.sort(key=lambda x: x['updated_at'], reverse=True)
-        
+        # database.get_chats already orders by updated_at desc.
         return {"chats": chats}
     except Exception as e:
         return {"chats": [], "error": str(e)}
@@ -301,11 +306,11 @@ async def migrate_history():
         existing_titles = [m.get('title', '').lower() for m in existing['metadatas']] if existing['metadatas'] else []
         
         # Note: Receipt chats are NOT auto-migrated 
-        # They are created when user uploads receipts to avoid duplicate fake chats(issue resolveds)
+        # They are created when user uploads receipts to avoid duplicate fake chats
         
         # 2. Migrate goals as chats with detailed calculations
         try:
-            # First gets all transactions to reference spending history
+            # First get all transactions to reference spending history
             all_transactions = []
             try:
                 trans_data = transactions_collection.get()
@@ -424,31 +429,23 @@ Would you like me to create a detailed weekly savings schedule, or help you iden
 
 @router.post("/create-chat")
 async def create_chat(data: dict):
-    """Create a new chat conversation"""
+    """Create a new chat conversation in Supabase, scoped to its owner."""
     try:
+        user_id = data.get("user_id", "default")
         first_message = data.get("first_message", "New Chat")
         title = generate_chat_title(first_message)
-        
-        chat_id = f"chat_{os.urandom(4).hex()}"
-        now = datetime.now().isoformat()
-        
-        # Store messages as document text (JSON string)
-        import json
         messages = data.get("messages", [])
-        
-        chats_collection.add(
-            documents=[json.dumps(messages)],
-            metadatas=[{
-                "title": title,
-                "created_at": now,
-                "updated_at": now,
-                "message_count": len(messages)
-            }],
-            ids=[chat_id]
-        )
-        
-        print(f"Chat Created: {title}")
+
+        chat_id = f"chat_{secrets.token_hex(4)}"
+        res = database.add_chat(user_id=user_id, chat_id=chat_id,
+                                title=title, messages=messages)
+        if res["status"] != "success":
+            raise HTTPException(status_code=500, detail=res["error"])
+
+        print(f"Chat Created: {title} ({user_id})")
         return {"status": "success", "id": chat_id, "title": title}
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Create Chat Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -456,24 +453,19 @@ async def create_chat(data: dict):
 
 @router.get("/get-chat/{chat_id}")
 async def get_chat(chat_id: str):
-    """Get a specific chat conversation with all messages"""
+    """Get a specific chat conversation (with all messages) from Supabase."""
     try:
-        import json
-        
-        results = chats_collection.get(ids=[chat_id])
-        
-        if not results['ids']:
+        res = database.get_chat(chat_id)
+        if res["status"] != "success" or not res["data"]:
             raise HTTPException(status_code=404, detail="Chat not found")
-        
-        meta = results['metadatas'][0]
-        messages = json.loads(results['documents'][0]) if results['documents'][0] else []
-        
+
+        row = res["data"]
         return {
             "id": chat_id,
-            "title": meta.get('title', 'Untitled Chat'),
-            "created_at": meta.get('created_at', ''),
-            "updated_at": meta.get('updated_at', ''),
-            "messages": messages
+            "title": row.get("title", "Untitled Chat"),
+            "created_at": row.get("created_at", ""),
+            "updated_at": row.get("updated_at", ""),
+            "messages": row.get("messages") or [],
         }
     except HTTPException:
         raise
@@ -483,44 +475,24 @@ async def get_chat(chat_id: str):
 
 @router.put("/update-chat/{chat_id}")
 async def update_chat(chat_id: str, data: dict):
-    """Update a chat conversation (add messages)"""
+    """Replace a chat's messages (the frontend sends the FULL array)."""
     try:
-        import json
-        
-        # Get existing chat
-        results = chats_collection.get(ids=[chat_id])
-        
-        if not results['ids']:
-            raise HTTPException(status_code=404, detail="Chat not found")
-        
-        meta = results['metadatas'][0]
-        existing_messages = json.loads(results['documents'][0]) if results['documents'][0] else []
-        
-        # Add new messages
-        new_messages = data.get("messages", [])
-        all_messages = existing_messages + new_messages
-        
-        # Update title if this is the first real message
-        title = meta.get('title', 'Untitled Chat')
-        if data.get("update_title") and all_messages:
-            title = generate_chat_title(all_messages[0].get('content', title))
-        
-        now = datetime.now().isoformat()
-        
-        # Delete old and add updated
-        chats_collection.delete(ids=[chat_id])
-        chats_collection.add(
-            documents=[json.dumps(all_messages)],
-            metadatas=[{
-                "title": title,
-                "created_at": meta.get('created_at', now),
-                "updated_at": now,
-                "message_count": len(all_messages)
-            }],
-            ids=[chat_id]
-        )
-        
-        return {"status": "success", "title": title}
+        # Frontend passes the complete conversation, so we REPLACE rather than
+        # append (appending would duplicate every turn).
+        messages = data.get("messages", [])
+
+        # Optionally re-derive the title from the first user message.
+        new_title = None
+        if data.get("update_title") and messages:
+            first = messages[0].get("content", "") if isinstance(messages[0], dict) else ""
+            if first:
+                new_title = generate_chat_title(first)
+
+        res = database.update_chat(chat_id, messages=messages, title=new_title)
+        if res["status"] != "success":
+            raise HTTPException(status_code=500, detail=res["error"])
+
+        return {"status": "success", "title": new_title}
     except HTTPException:
         raise
     except Exception as e:
@@ -530,11 +502,15 @@ async def update_chat(chat_id: str, data: dict):
 
 @router.delete("/delete-chat/{chat_id}")
 async def delete_chat(chat_id: str):
-    """Delete a chat conversation"""
+    """Delete a chat conversation from Supabase."""
     try:
-        chats_collection.delete(ids=[chat_id])
+        res = database.delete_chat(chat_id)
+        if res["status"] != "success":
+            raise HTTPException(status_code=500, detail=res["error"])
         print(f"Chat Deleted: {chat_id}")
         return {"status": "success"}
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Delete Chat Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -542,38 +518,16 @@ async def delete_chat(chat_id: str):
 
 @router.put("/rename-chat/{chat_id}")
 async def rename_chat(chat_id: str, data: dict):
-    """Rename a chat conversation"""
+    """Rename a chat conversation in Supabase."""
     try:
-        import json
-        
         new_title = data.get("title", "").strip()
         if not new_title:
             raise HTTPException(status_code=400, detail="Title cannot be empty")
-        
-        # Get existing chat
-        results = chats_collection.get(ids=[chat_id])
-        
-        if not results['ids']:
-            raise HTTPException(status_code=404, detail="Chat not found")
-        
-        meta = results['metadatas'][0]
-        messages = results['documents'][0]
-        
-        now = datetime.now().isoformat()
-        
-        # Delete old and add with new title
-        chats_collection.delete(ids=[chat_id])
-        chats_collection.add(
-            documents=[messages],
-            metadatas=[{
-                "title": new_title,
-                "created_at": meta.get('created_at', now),
-                "updated_at": now,
-                "message_count": meta.get('message_count', 0)
-            }],
-            ids=[chat_id]
-        )
-        
+
+        res = database.update_chat(chat_id, title=new_title)
+        if res["status"] != "success":
+            raise HTTPException(status_code=500, detail=res["error"])
+
         return {"status": "success", "title": new_title}
     except HTTPException:
         raise

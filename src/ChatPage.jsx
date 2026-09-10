@@ -2,16 +2,39 @@ import React, { useState, useEffect, useRef } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { 
-    faPlus, faChartPie, faBullseye, faGear, 
+    faPlus, faChartPie, faGear, 
     faRightFromBracket, faArrowUp, faPaperclip, faEnvelope,
     faCoffee, faLaptop, faCartShopping, faCalculator,
-    faEllipsis, faPen, faTrash, faCheck, faFileInvoiceDollar
+    faEllipsis, faPen, faTrash, faCheck, faFileInvoiceDollar,
+    faFilePdf, faFileWord, faFileExcel, faFileImage, faFileLines
 } from "@fortawesome/free-solid-svg-icons";
 import Logo from "./assets/loamylogo.png";
 import ReviewQueue from "./ReviewQueue.jsx";
 import "./ChatPage.css";
 
 const API_URL = "http://127.0.0.1:8000";
+
+// The logged-in user's id. Every per-user request (chats, dashboard, etc.) must
+// be scoped to this so data never leaks between accounts on the same browser.
+const getSessionUserId = () => {
+    try {
+        const sess = JSON.parse(localStorage.getItem("loamy_session") || "{}");
+        return sess.user_id || "default";
+    } catch {
+        return "default";
+    }
+};
+
+// Everything user-specific we cache in localStorage. Cleared on logout so the
+// NEXT user who logs in on this browser starts clean and the background sync
+// can't re-push the previous user's Gmail data under the new account.
+const clearUserStorage = () => {
+    [
+        "loamy_session", "gmail_connected", "gmail_email_data",
+        "gmail_access_token", "gmail_refresh_token", "gmail_email",
+        "loamy_last_sync_at", "loamy_onboarding", "loamy_post_oauth_redirect",
+    ].forEach((k) => localStorage.removeItem(k));
+};
 
 const ChatPage = () => {
     const navigate = useNavigate();
@@ -27,6 +50,10 @@ const ChatPage = () => {
     
     // Chat history state
     const [chatList, setChatList] = useState([]);
+    // True until the first /get-chats response arrives. Without this, chatList's
+    // initial [] rendered "No chats yet" for a moment on every visit, even though
+    // the user actually has chats - it just hadn't loaded them yet.
+    const [chatsLoading, setChatsLoading] = useState(true);
     const [currentChatId, setCurrentChatId] = useState(null);
     
     // File upload state
@@ -41,6 +68,9 @@ const ChatPage = () => {
     
     // Dropdown state
     const [activeDropdown, setActiveDropdown] = useState(null);
+
+    // Logout confirmation modal
+    const [showLogoutModal, setShowLogoutModal] = useState(false);
     
     const chatDisplayRef = useRef(null);
     const fileInputRef = useRef(null);
@@ -64,14 +94,17 @@ const ChatPage = () => {
         }
     }, [messages]);
 
-    // Load chat list from backend
+    // Load chat list from backend, scoped to the logged-in user so one user
+    // never sees another user's chats in the sidebar.
     const loadChatList = async () => {
         try {
-            const res = await fetch(`${API_URL}/get-chats`);
+            const res = await fetch(`${API_URL}/get-chats?user_id=${encodeURIComponent(getSessionUserId())}`);
             const data = await res.json();
             setChatList(data.chats || []);
         } catch (e) {
             console.error("Load chats error:", e);
+        } finally {
+            setChatsLoading(false);
         }
     };
 
@@ -94,7 +127,7 @@ const createNewChat = async (title) => {
             const res = await fetch(`${API_URL}/create-chat`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ first_message: title, messages: [] })
+                body: JSON.stringify({ first_message: title, messages: [], user_id: getSessionUserId() })
             });
             const data = await res.json();
             if (data.status === "success") {
@@ -229,7 +262,7 @@ const createNewChat = async (title) => {
                 const allocResult = await allocRes.json();
                 
                 if (allocResult.status === "success") {
-                    const msg = "Done! I've updated your dashboard. Refresh your Savings Goals page to see the changes.";
+                    const msg = "Done! I've updated your dashboard. Refresh the dashboard to see the changes.";
                     const aiMsg = { sender: "ai", content: msg, isHTML: false };
                     const allMessages = [...currentMessages, aiMsg];
                     setMessages(allMessages);
@@ -294,6 +327,18 @@ const createNewChat = async (title) => {
         return allocations;
     };
 
+    // Pick a format-appropriate icon for non-image documents.
+    const getFileIcon = (file) => {
+        const name = (file?.name || "").toLowerCase();
+        const type = (file?.type || "").toLowerCase();
+        if (type.includes("pdf") || name.endsWith(".pdf")) return faFilePdf;
+        if (type.includes("word") || name.endsWith(".doc") || name.endsWith(".docx")) return faFileWord;
+        if (type.includes("sheet") || type.includes("excel") ||
+            name.endsWith(".xls") || name.endsWith(".xlsx") || name.endsWith(".csv")) return faFileExcel;
+        if (type.startsWith("image/")) return faFileImage;
+        return faFileLines;
+    };
+
     // Handle file selection
     const handleFileSelect = (e) => {
         const file = e.target.files[0];
@@ -306,7 +351,9 @@ const createNewChat = async (title) => {
             reader.onload = (e) => setFilePreview(e.target.result);
             reader.readAsDataURL(file);
         } else {
-            setFilePreview("/pdf-icon.svg");
+            // Non-image: sentinel value so the UI shows a format icon, not a
+            // broken <img>. (The old code pointed at a missing /pdf-icon.svg.)
+            setFilePreview("__doc__");
         }
     };
 
@@ -328,6 +375,7 @@ const createNewChat = async (title) => {
         
         const formData = new FormData();
         formData.append("file", pendingFile);
+        formData.append("user_id", getSessionUserId());
         
         setPendingFile(null);
         setFilePreview(null);
@@ -444,13 +492,29 @@ const createNewChat = async (title) => {
         }
     };
 
-    // Logout
-    const handleLogout = () => {
-        if (window.confirm("Are you sure you want to logout?")) {
-            localStorage.removeItem("loamy_session");
-            localStorage.removeItem("gmail_connected");
-            navigate("/");
+    // Logout: open a proper confirmation modal instead of a browser alert.
+    const handleLogout = () => setShowLogoutModal(true);
+
+    // Confirmed logout: wipe ALL user-scoped storage (session + Gmail tokens/
+    // data) so the next account on this browser starts clean and the background
+    // sync can't re-push this user's Gmail data under a different account.
+    const confirmLogout = async () => {
+        // Purge this user's server-side Gmail blob so nothing they synced on this
+        // browser can surface for whoever logs in next. Best-effort: never block
+        // logout on it.
+        const userId = getSessionUserId();
+        try {
+            await fetch(`${API_URL}/clear-gmail-data`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ user_id: userId }),
+            });
+        } catch (e) {
+            console.error("Clear gmail on logout failed:", e);
         }
+        clearUserStorage();
+        setShowLogoutModal(false);
+        navigate("/");
     };
 
     // Suggestion cards
@@ -483,10 +547,6 @@ const createNewChat = async (title) => {
                             <FontAwesomeIcon icon={faChartPie} />
                             <span>Spending Analysis</span>
                         </Link>
-                        <Link to="/goals" className="menu-item">
-                            <FontAwesomeIcon icon={faBullseye} />
-                            <span>Savings Goals</span>
-                        </Link>
                         <Link to="/invoices" className="menu-item">
                             <FontAwesomeIcon icon={faFileInvoiceDollar} />
                             <span>Invoices</span>
@@ -496,7 +556,9 @@ const createNewChat = async (title) => {
                     <div className="menu-section">
                         <p className="section-label">Your Chats</p>
                         <div className="chat-list">
-                            {chatList.length === 0 ? (
+                            {chatsLoading ? (
+                                <div className="chat-list-empty">Loading chats...</div>
+                            ) : chatList.length === 0 ? (
                                 <div className="chat-list-empty">No chats yet</div>
                             ) : (
                                 chatList.map(chat => (
@@ -629,7 +691,13 @@ const createNewChat = async (title) => {
                     {filePreview && (
                         <div className="file-preview-container">
                             <div className="file-preview">
-                                <img src={filePreview} alt="Preview" />
+                                {filePreview.startsWith("data:") ? (
+                                    <img src={filePreview || "/placeholder.svg"} alt="Receipt preview" />
+                                ) : (
+                                    <div className="file-preview-icon" aria-hidden="true">
+                                        <FontAwesomeIcon icon={getFileIcon(pendingFile)} />
+                                    </div>
+                                )}
                                 <div className="file-preview-info">
                                     <span>{pendingFile?.name}</span>
                                     <button className="file-remove-btn" onClick={removeFile}>×</button>
@@ -644,7 +712,7 @@ const createNewChat = async (title) => {
                             <input 
                                 type="file" 
                                 hidden 
-                                accept="image/*, .pdf" 
+                                accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv" 
                                 ref={fileInputRef}
                                 onChange={handleFileSelect}
                             />
@@ -671,6 +739,41 @@ const createNewChat = async (title) => {
                     <p className="disclaimer">Loamy AI can make mistakes. Always verify important financial decisions.</p>
                 </footer>
             </main>
+
+            {/* Logout confirmation modal */}
+            {showLogoutModal && (
+                <div
+                    className="logout-modal-overlay"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="logout-modal-title"
+                    onClick={() => setShowLogoutModal(false)}
+                >
+                    <div className="logout-modal" onClick={(e) => e.stopPropagation()}>
+                        <div className="logout-modal-icon">
+                            <FontAwesomeIcon icon={faRightFromBracket} />
+                        </div>
+                        <h3 id="logout-modal-title">Log out of Loamy?</h3>
+                        <p>You&apos;ll need to sign back in to access your dashboard, chats, and financial data.</p>
+                        <div className="logout-modal-actions">
+                            <button
+                                type="button"
+                                className="logout-modal-cancel"
+                                onClick={() => setShowLogoutModal(false)}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                className="logout-modal-confirm"
+                                onClick={confirmLogout}
+                            >
+                                Log Out
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

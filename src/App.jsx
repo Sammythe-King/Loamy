@@ -1,11 +1,10 @@
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, Navigate } from "react-router-dom";
 
 // Pages
 import Login from "./Login.jsx";
 import SignUp from "./SignUp.jsx";
 import Dashboard from "./Dashboard.jsx";
 import ChatPage from "./ChatPage.jsx";
-import GoalsPage from "./GoalsPage.jsx";
 import GmailConnectPage from "./GmailConnectPage.jsx";
 import InvoicesPage from "./InvoicesPage.jsx";
 import ReviewQueuePage from "./ReviewQueuePage.jsx";
@@ -30,7 +29,9 @@ export default function App() {
       {/* Main App Routes */}
       <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/chat" element={<ChatPage />} />
-      <Route path="/goals" element={<GoalsPage />} />
+      {/* Savings & Goals is hidden from the UI for now; send any deep links
+          or bookmarks straight to the dashboard instead of a dead page. */}
+      <Route path="/goals" element={<Navigate to="/dashboard" replace />} />
       <Route path="/gmail-connect" element={<GmailConnectPage />} />
       <Route path="/invoices" element={<InvoicesPage />} />
       <Route path="/review-queue" element={<ReviewQueuePage />} />

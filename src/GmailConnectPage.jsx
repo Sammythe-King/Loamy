@@ -29,6 +29,21 @@ const GmailConnectPage = () => {
     const [emailList, setEmailList] = useState([]);
 
     useEffect(() => {
+        const urlParams = new URLSearchParams(window.location.search);
+        const code = urlParams.get("code");
+        const state = urlParams.get("state");
+
+        // "Continue with Google" on Login/Sign Up reuses this page's redirect
+        // URI (it's the only one authorized in Google Cloud Console) and tags
+        // its request with state=auth. That request happens BEFORE the user
+        // has a session, so it must be handled ahead of the session check
+        // below, which would otherwise bounce them straight back to "/".
+        if (code && state === "auth") {
+            window.history.replaceState({}, document.title, "/gmail-connect");
+            handleAuthLoginCallback(code);
+            return;
+        }
+
         // Check session
         const sessionData = localStorage.getItem("loamy_session");
         if (!sessionData) {
@@ -36,10 +51,6 @@ const GmailConnectPage = () => {
             return;
         }
 
-        // Check for OAuth callback code in URL
-        const urlParams = new URLSearchParams(window.location.search);
-        const code = urlParams.get("code");
-        
         if (code) {
             handleOAuthCallback(code);
             // Clear the URL params
@@ -54,6 +65,51 @@ const GmailConnectPage = () => {
             }
         }
     }, [navigate]);
+
+    // Handles the "Continue with Google" sign-in/sign-up flow (as opposed to
+    // the "Connect Gmail for bank sync" flow this page normally handles).
+    const handleAuthLoginCallback = async (code) => {
+        setIsLoading(true);
+        try {
+            const response = await fetch(`${API_URL}/google-auth`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ code, redirect_uri: GOOGLE_REDIRECT_URI })
+            });
+            const data = await response.json();
+
+            if (data.status === "success") {
+                // If a DIFFERENT user is signing in on this browser, drop the
+                // previous user's cached Gmail connection so they don't see it.
+                const prev = JSON.parse(localStorage.getItem("loamy_session") || "{}");
+                const hasCachedGmail =
+                    localStorage.getItem("gmail_access_token") ||
+                    localStorage.getItem("gmail_email_data");
+                if (hasCachedGmail && prev.user_id !== data.user_id) {
+                    [
+                        "gmail_connected", "gmail_email_data", "gmail_access_token",
+                        "gmail_refresh_token", "gmail_email", "loamy_last_sync_at",
+                    ].forEach((k) => localStorage.removeItem(k));
+                }
+
+                localStorage.setItem("loamy_session", JSON.stringify({
+                    user_id: data.user_id,
+                    email: data.email,
+                    name: data.name || data.email?.split("@")[0]
+                }));
+
+                // Brand-new Google accounts haven't been through onboarding yet;
+                // returning accounts go straight to chat.
+                navigate(data.is_new_user ? "/onboarding" : "/chat");
+            } else {
+                navigate("/?google_error=" + encodeURIComponent(data.error || "Google sign-in failed. Please try again."));
+            }
+        } catch (error) {
+            console.error("Google sign-in error:", error);
+            navigate("/?google_error=" + encodeURIComponent("Connection error. Please make sure the backend is running."));
+        }
+        setIsLoading(false);
+    };
 
     const handleOAuthCallback = async (code) => {
         setIsLoading(true);

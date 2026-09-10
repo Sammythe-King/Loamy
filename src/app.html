@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fintech AI | Your Advisor</title>
+    <link rel="stylesheet" href="app.css">
+    <!-- Using Lucide Icons for a professional look -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+
+    <div class="app-container">
+        <!-- Sidebar: Customized for a Financial Perspective -->
+        <aside class="sidebar">
+            <div class="sidebar-top">
+                <button class="new-chat-btn">
+                    <i data-lucide="plus"></i>
+                    <span>New Consultation</span>
+                </button>
+            </div>
+
+            <div class="sidebar-menu">
+                <div class="menu-section">
+                    <p class="section-label">Tools</p>
+                    <a href="spending.html" class="menu-item" style="text-decoration: none; color: inherit;">
+                        <i data-lucide="pie-chart"></i>
+                        <span>Spending Analysis</span>
+                    </a>
+                    <!-- Savings Goals hidden from UI (backend/goals.html left intact) -->
+                    <div class="menu-item">
+                        <i data-lucide="file-text"></i>
+                        <span>Tax Summary</span>
+                    </div>
+                </div>
+
+                <div class="menu-section">
+                    <p class="section-label">Your chats</p>
+                    <div class="chat-list" id="chat-list">
+                        <!-- Chat history items will be loaded here -->
+                    </div>
+                </div>
+            </div>
+
+            <div class="sidebar-bottom">
+                <div class="menu-item">
+                    <i data-lucide="settings"></i>
+                    <span>Preferences</span>
+                </div>
+                <div class="menu-item logout-btn" id="logout-btn">
+                    <i data-lucide="log-out"></i>
+                    <span>Logout</span>
+                </div>
+                <div class="user-profile">
+                    <div class="avatar" id="user-avatar">U</div>
+                    <span id="user-name">User</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="chat-area">
+            <header class="chat-header">
+                <div class="model-selector">
+                    <span>Fintech AI 1.5 Pro</span>
+                    <i data-lucide="chevron-down"></i>
+                </div>
+            </header>
+
+            <div class="chat-content" id="chat-display">
+                <!-- Welcome State -->
+                <div class="welcome-container">
+                    <h1>Hi Samuel,</h1>
+                    <h2 class="subtitle">Where should we start with your finances today?</h2>
+                    
+                    <div class="suggestion-grid">
+                        <div class="suggestion-card">
+                            <p>Analyze my Starbucks spending this week</p>
+                            <i data-lucide="coffee"></i>
+                        </div>
+                        <div class="suggestion-card">
+                            <p>Can I afford a new laptop next month?</p>
+                            <i data-lucide="laptop"></i>
+                        </div>
+                        <div class="suggestion-card">
+                            <p>Summarize my grocery expenses</p>
+                            <i data-lucide="shopping-cart"></i>
+                        </div>
+                        <div class="suggestion-card">
+                            <p>Calculate my remaining monthly budget</p>
+                            <i data-lucide="calculator"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Input Area -->
+            <footer class="input-container">
+                <!-- File Preview Area (hidden by default) -->
+                <div class="file-preview-container" id="file-preview-container" style="display: none;">
+                    <div class="file-preview">
+                        <img id="file-preview-image" src="" alt="Preview">
+                        <div class="file-preview-info">
+                            <span id="file-preview-name">filename.jpg</span>
+                            <button class="file-remove-btn" id="file-remove-btn" title="Remove file">
+                                <i data-lucide="x"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="input-wrapper">
+                    <label for="receipt-upload" class="icon-btn" title="Upload Receipt or PDF">
+                    <i data-lucide="file-text"></i> 
+                    <input type="file" id="receipt-upload" hidden accept="image/*, .pdf">
+                    </label>
+                    <button class="icon-btn gmail-btn" id="gmail-btn" title="Connect Gmail">
+                        <i data-lucide="mail"></i>
+                    </button>
+                    <input type="text" placeholder="Ask your financial advisor..." id="user-input">
+                    <button class="send-btn" id="send-btn">
+                        <i data-lucide="arrow-up"></i>
+                    </button>
+                </div>
+                <p class="disclaimer">Fintech AI can make mistakes. Always verify important financial decisions.</p>
+            </footer>
+        </main>
+    </div>
+
+    <!-- <script>
+        // Initialize icons
+        lucide.createIcons();
+
+        // Simple script to handle basic UI interactions
+        const userInput = document.getElementById('user-input');
+        // const chatDisplay = document.getElementById('chat-display');
+
+        // userInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && userInput.value.trim() !== '') {
+                // Clear welcome screen on first message
+                const welcome = document.querySelector('.welcome-container');
+                if (welcome) welcome.style.display = 'none';
+                
+                // Add user message to UI (simplified for now)
+                const msg = document.createElement('div');
+                msg.className = 'message user-message';
+                msg.textContent = userInput.value;
+                chatDisplay.appendChild(msg);
+                
+                userInput.value = '';
+                chatDisplay.scrollTop = chatDisplay.scrollHeight;
+            }
+        });
+    </script> -->
+    <script src="app.js"></script>
+</body>
+</html>

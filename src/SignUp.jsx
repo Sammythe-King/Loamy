@@ -1,17 +1,37 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Logo from "./assets/loamylogo.png";
+import { GoogleGlyph } from "./Login";
 import "./Login.css";
 
 const API_URL = "http://127.0.0.1:8000";
+
+// Same Google OAuth config as Login.jsx - reuses the "Connect Gmail"
+// redirect URI (/gmail-connect) since that's the only one already
+// authorized in the Google Cloud Console.
+const GOOGLE_CLIENT_ID = "72400306293-pnjcf2kqtuli55kdn2l5ouq9qjpgc6kt.apps.googleusercontent.com";
+const GOOGLE_REDIRECT_URI = window.location.origin + "/gmail-connect";
+const GOOGLE_SCOPES = ["openid", "email", "profile"].join(" ");
 
 const SignUp = () => {
     const navigate = useNavigate();
     const [businessName, setBusinessName] = useState("");
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
+    const [showPassword, setShowPassword] = useState(false);
     const [error, setError] = useState("");
     const [isLoading, setIsLoading] = useState(false);
+
+    const handleGoogleSignIn = () => {
+        const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
+            `client_id=${GOOGLE_CLIENT_ID}` +
+            `&redirect_uri=${encodeURIComponent(GOOGLE_REDIRECT_URI)}` +
+            `&response_type=code` +
+            `&scope=${encodeURIComponent(GOOGLE_SCOPES)}` +
+            `&state=auth` +
+            `&prompt=select_account`;
+        window.location.href = authUrl;
+    };
 
     const handleSignUp = async (e) => {
         e.preventDefault();
@@ -62,7 +82,9 @@ const SignUp = () => {
                 // the account exists, send the user into onboarding.
                 navigate("/onboarding");
             } else {
-                setError(data.message || "Registration failed. Please try again.");
+                // FastAPI returns errors as {"detail": "..."}, not {"message": "..."}.
+                // Fall back to the generic text only if the backend sent nothing.
+                setError(data.detail || data.message || "Registration failed. Please try again.");
             }
         } catch (err) {
             console.error("Registration error:", err);
@@ -92,6 +114,20 @@ const SignUp = () => {
                     </div>
                 )}
 
+                <button
+                    type="button"
+                    className="google-btn"
+                    onClick={handleGoogleSignIn}
+                    disabled={isLoading}
+                >
+                    <GoogleGlyph />
+                    <span>Continue with Google</span>
+                </button>
+
+                <div className="auth-divider">
+                    <span>OR</span>
+                </div>
+
                 <form onSubmit={handleSignUp}>
                     <div className="form-group">
                         <label>Business Name</label>
@@ -117,13 +153,35 @@ const SignUp = () => {
 
                     <div className="form-group">
                         <label>Password</label>
-                        <input 
-                            type="password" 
-                            placeholder="Create a strong password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            disabled={isLoading}
-                        />
+                        <div className="password-input-wrapper">
+                            <input
+                                type={showPassword ? "text" : "password"}
+                                placeholder="Create a strong password"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                disabled={isLoading}
+                            />
+                            <button
+                                type="button"
+                                className="password-toggle-btn"
+                                onClick={() => setShowPassword((v) => !v)}
+                                aria-label={showPassword ? "Hide password" : "Show password"}
+                                tabIndex={-1}
+                            >
+                                {showPassword ? (
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-5.5 0-9.5-4-11-8 .78-1.85 2.05-3.68 3.68-5.1M9.9 4.24A10.94 10.94 0 0 1 12 4c5.5 0 9.5 4 11 8-.46 1.09-1.06 2.14-1.8 3.08" />
+                                        <path d="M9.5 9.5a3 3 0 1 0 4.24 4.24" />
+                                        <line x1="2" y1="2" x2="22" y2="22" />
+                                    </svg>
+                                ) : (
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z" />
+                                        <circle cx="12" cy="12" r="3" />
+                                    </svg>
+                                )}
+                            </button>
+                        </div>
                     </div>
 
                     <button 
