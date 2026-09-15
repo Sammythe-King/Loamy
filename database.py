@@ -14,7 +14,7 @@ to numeric(14,2) via _to_money (Ledger rule: never trust floats).
 import os
 import json
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -56,16 +56,56 @@ def _to_money(amount) -> float:
     return float(q)
 
 
-def _parse_date(value):
-    """Best-effort parse of a 'YYYY-MM-DD' string into an ISO date for ordering.
-    Returns None when the value is missing or unparseable (we keep the raw
-    string in the `date` column regardless, so nothing is ever lost)."""
+# Formats we accept from receipts/bank alerts. Day-first variants come BEFORE
+# month-first because Loamy is an African app (DD/MM/YYYY is the local norm),
+# so an ambiguous "05/09/2026" is read as 5 Sept, not 9 May.
+_DATE_FORMATS = (
+    "%Y-%m-%d", "%Y/%m/%d",
+    "%d/%m/%Y", "%m/%d/%Y",
+    "%d-%m-%Y", "%m-%d-%Y",
+    "%d.%m.%Y",
+    "%d %b %Y", "%d %B %Y",
+    "%b %d, %Y", "%B %d, %Y",
+    "%d %b, %Y", "%d %B, %Y",
+)
+
+
+def _to_date_obj(value):
+    """Robustly parse many real-world date strings into a date object, or None.
+
+    Receipts (especially foreign ones like a Carrefour Mauritius slip) and bank
+    alerts arrive in all sorts of formats. The old parser only understood
+    strict 'YYYY-MM-DD', so anything else became None - which is exactly why a
+    scanned receipt fell out of 'how much did I spend today'. This tries ISO
+    first (incl. timestamps), then the common day-first/month-first layouts."""
     if not value:
         return None
+    s = str(value).strip()
+    if not s:
+        return None
+    # ISO with time component, e.g. "2026-09-11T21:38:07Z".
     try:
-        return datetime.strptime(str(value)[:10], "%Y-%m-%d").date().isoformat()
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+    except (ValueError, TypeError):
+        pass
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(s, fmt).date()
+        except (ValueError, TypeError):
+            continue
+    # Last resort: pull the first YYYY-MM-DD-looking chunk out of a longer string.
+    try:
+        return datetime.strptime(s[:10], "%Y-%m-%d").date()
     except (ValueError, TypeError):
         return None
+
+
+def _parse_date(value):
+    """Best-effort parse of a date string into an ISO date string for ordering.
+    Returns None when unparseable (we keep the raw string in the `date` column
+    regardless, so nothing is ever lost)."""
+    d = _to_date_obj(value)
+    return d.isoformat() if d else None
 
 
 def _ok(data):
@@ -584,6 +624,11 @@ def get_gmail_financial_context(user_id: str, limit: int = 30) -> dict:
         def _is_credit(a):
             return (a.get("transaction_type") or "").lower() in ("credit", "in", "income", "deposit")
 
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())  # Monday
+        month_start = today.replace(day=1)
+        debits_today = debits_week = debits_month = 0.0
+
         total_credits = total_debits = 0.0
         by_category: dict[str, float] = {}
         for a in alerts:
@@ -596,6 +641,14 @@ def get_gmail_financial_context(user_id: str, limit: int = 30) -> dict:
                 total_debits = _to_money(total_debits + amt)
                 cat = a.get("category") or categorize_narration(a.get("narration", ""))
                 by_category[cat] = _to_money(by_category.get(cat, 0) + amt)
+                d = _to_date_obj(a.get("date"))
+                if d:
+                    if d == today:
+                        debits_today = _to_money(debits_today + amt)
+                    if d >= week_start:
+                        debits_week = _to_money(debits_week + amt)
+                    if d >= month_start:
+                        debits_month = _to_money(debits_month + amt)
 
         recent = []
         for a in alerts[:limit]:
@@ -619,6 +672,9 @@ def get_gmail_financial_context(user_id: str, limit: int = 30) -> dict:
             "spending_by_category": by_category,
             "recent_transactions": recent,
             "alert_count": len(alerts),
+            "debits_today": debits_today,
+            "debits_week": debits_week,
+            "debits_month": debits_month,
         })
     except Exception as e:
         print(f"[Database] get_gmail_financial_context failed: {e}")
@@ -655,11 +711,29 @@ def get_chat_financial_context(user_id: str, limit: int = 50) -> dict:
         total_out = sum(_to_money(r["amount"]) for r in rows if not _is_income(r))
         balance = _to_money(total_in - total_out)
 
+        # Deterministic time-window spending, computed here in code rather than
+        # left for the AI to eyeball from a text list of dates (which silently
+        # dropped receipts whose dates weren't clean ISO). Uses occurred_on,
+        # falling back to a robust parse of the raw date string.
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())  # Monday
+        month_start = today.replace(day=1)
+        ledger_today = ledger_week = ledger_month = 0.0
+
         by_category: dict[str, float] = {}
         for r in rows:
             if not _is_income(r):
                 cat = r.get("category") or "other"
-                by_category[cat] = _to_money(by_category.get(cat, 0) + _to_money(r["amount"]))
+                amt = _to_money(r["amount"])
+                by_category[cat] = _to_money(by_category.get(cat, 0) + amt)
+                d = _to_date_obj(r.get("occurred_on") or r.get("date"))
+                if d:
+                    if d == today:
+                        ledger_today = _to_money(ledger_today + amt)
+                    if d >= week_start:
+                        ledger_week = _to_money(ledger_week + amt)
+                    if d >= month_start:
+                        ledger_month = _to_money(ledger_month + amt)
 
         # Recent itemized ledger (already ordered newest-first above).
         recent = []
@@ -698,6 +772,11 @@ def get_chat_financial_context(user_id: str, limit: int = 50) -> dict:
         combined.sort(key=lambda t: t.get("date") or "", reverse=True)
         combined = combined[:limit]
 
+        # Combined, deterministic period spend across BOTH sources.
+        spent_today = _to_money(ledger_today + gmail.get("debits_today", 0))
+        spent_week = _to_money(ledger_week + gmail.get("debits_week", 0))
+        spent_month = _to_money(ledger_month + gmail.get("debits_month", 0))
+
         return _ok({
             "summary": {
                 "balance": effective_balance,
@@ -707,6 +786,10 @@ def get_chat_financial_context(user_id: str, limit: int = 50) -> dict:
                 "last_alert_date": gmail.get("last_alert_date"),
                 "total_income": total_income,
                 "total_spending": total_spending,
+                "spent_today": spent_today,
+                "spent_this_week": spent_week,
+                "spent_this_month": spent_month,
+                "today_date": today.isoformat(),
                 "transaction_count": len(rows) + gmail.get("alert_count", 0),
                 "ledger_transaction_count": len(rows),
                 "bank_alert_count": gmail.get("alert_count", 0),

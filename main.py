@@ -18,7 +18,7 @@ load_dotenv()
 # Import chat router
 from chat import router as chat_router
 # Import WhatsApp transport module (Meta Cloud API webhooks + outbound sends)
-from whatsapp import router as whatsapp_router, set_ai_handler
+from whatsapp import router as whatsapp_router, set_ai_handler, set_receipt_handler
 
 app = FastAPI()
 
@@ -563,16 +563,21 @@ def to_sentence_case(text):
     text = text.strip()
     return text[0].upper() + text[1:]
     
-@app.post("/upload-artifact")
-async def upload_artifact(file: UploadFile = File(...), user_id: str = Form("default")):
-    print(f"--- Scanning Artifact: {file.filename} (user={user_id}) ---")
-    
+def process_receipt_image(file_data, content_type, user_id="default"):
+    """Shared receipt pipeline used by BOTH the web /upload-artifact endpoint and
+    the WhatsApp image handler (whatsapp.py). Extracts structured data from a
+    receipt image/PDF with Gemini vision, converts any foreign currency to NGN,
+    and saves it as an expense transaction scoped to user_id. Returns the standard
+    response dict.
+
+    Kept channel-agnostic (and synchronous) so a receipt behaves identically
+    whether it arrives from the web uploader or a WhatsApp photo; callers run it
+    via asyncio.to_thread so the blocking Gemini + Supabase work never stalls the
+    event loop (Atomic Modularity + Logic/UI Separation rules)."""
     try:
-        file_data = await file.read()
-        
         # Multimodal call to Gemini
         response = model.generate_content(
-            [SYSTEM_PROMPT, {"mime_type": file.content_type, "data": file_data}],
+            [SYSTEM_PROMPT, {"mime_type": content_type, "data": file_data}],
             generation_config={"response_mime_type": "application/json"}
         )
         
@@ -636,6 +641,15 @@ async def upload_artifact(file: UploadFile = File(...), user_id: str = Form("def
         else:
             converted_amount = numeric_total
 
+        # --- NORMALIZE THE DATE ---
+        # The receipt's printed date can be missing or in a non-ISO/foreign
+        # format (e.g. a Carrefour Mauritius slip). Keep it only if it parses to
+        # a real calendar date; otherwise fall back to today so a just-scanned
+        # receipt reliably counts toward "spent today". Store as clean ISO.
+        parsed_date = database._to_date_obj(transaction_data.get('date'))
+        effective_date = (parsed_date or datetime.now().date()).isoformat()
+        transaction_data['date'] = effective_date
+
         # --- SAVE TO SUPABASE (scoped to this user) ---
         # Store with both original and converted amounts. Human-readable summary
         # goes in `document`; the deterministic numbers go in typed columns.
@@ -688,10 +702,30 @@ async def upload_artifact(file: UploadFile = File(...), user_id: str = Form("def
         print(f"Backend Error: {str(e)}")
         return {"error": str(e)}
 
+
+@app.post("/upload-artifact")
+async def upload_artifact(file: UploadFile = File(...), user_id: str = Form("default")):
+    print(f"--- Scanning Artifact: {file.filename} (user={user_id}) ---")
+    try:
+        file_data = await file.read()
+        # Gemini vision + Supabase writes are blocking; run them off the event
+        # loop so concurrent requests (chats, dashboard) aren't stalled.
+        return await asyncio.to_thread(
+            process_receipt_image, file_data, file.content_type, user_id
+        )
+    except Exception as e:
+        print(f"Backend Error: {str(e)}")
+        return {"error": str(e)}
+
+
 @app.post("/chat")
 async def chat_with_history(query: dict):
     user_msg = query.get("text")
     user_id = query.get("user_id", "default_user")  # Get user ID for Gmail data lookup
+    # "web" (default) keeps the existing markdown-friendly formatting for the
+    # web chat UI. "whatsapp" appends the plain-text formatting rules below,
+    # since WhatsApp renders a stray asterisk literally instead of bolding it.
+    channel = query.get("channel", "web")
     
     # Pre-calculate accurate date information so AI doesn't have to guess
     from calendar import monthrange
@@ -740,84 +774,44 @@ async def chat_with_history(query: dict):
         except Exception as e:
             print(f"Error fetching chat history: {e}")
 
-        # 1. Get ALL spending history (receipts/transactions) - not just semantic search
-        all_transactions = collection.get()
+        # 1. Get this user's spending ledger (receipts/manual entries) from
+        #    Supabase. IMPORTANT: this used to read the ChromaDB `collection`,
+        #    but nothing has written to that collection since receipts moved to
+        #    Supabase (see database.add_transaction) - so a receipt scanned via
+        #    WhatsApp or the web uploader could NEVER show up here, no matter
+        #    how it was dated. It also compared dates as
+        #    "September 11, 2026" == "2026-09-11", which never matches even
+        #    when there WAS data. database.get_chat_financial_context() reads
+        #    the real table and computes today/week/month totals deterministically
+        #    (across receipts AND bank alerts) instead of leaving date math to the AI.
+        ledger_ctx_res = database.get_chat_financial_context(user_id)
+        ledger_data = (ledger_ctx_res.get("data") or {}) if ledger_ctx_res.get("status") == "success" else {}
+        ledger_summary = ledger_data.get("summary", {}) or {}
+        ledger_only_entries = [
+            t for t in (ledger_data.get("recent_transactions") or [])
+            if t.get("source") == "ledger"
+        ]
+
         spending_entries = []
-        total_spending_this_month = 0
-        total_spending_today = 0
-        
-        for i in range(len(all_transactions['ids'])):
-            meta = all_transactions['metadatas'][i]
-            vendor = meta.get('vendor', 'Unknown')
-            total = float(meta.get('total', 0))  # This is already in NGN (converted)
-            original_total = float(meta.get('original_total', total))  # Original amount
-            date = meta.get('date', '')
-            category = meta.get('category', 'other')
-            original_currency = meta.get('original_currency', meta.get('currency', 'NGN'))
-            
-            # Currency symbols mapping
-            currency_symbols = {
-                'NGN': '₦', 'USD': '$', 'EUR': '€', 'GBP': '£',
-                'INR': '₹', 'MUR': '₨', 'Rs': '₨', 'ZAR': 'R', 'KES': 'KES', 'GHS': 'GH₵'
-            }
-            original_symbol = currency_symbols.get(original_currency, '₦')
-            
-            # Auto-detect currency from vendor name for old records without currency field
-            vendor_lower = vendor.lower()
-            stored_currency = meta.get('original_currency') or meta.get('currency')
-            
-            # If no currency stored OR stored as NGN but vendor suggests otherwise, auto-detect
-            if not stored_currency or stored_currency == 'NGN':
-                # Check if this is likely a USD vendor
-                is_usd_vendor = any(usd_vendor in vendor_lower for usd_vendor in ['vercel', 'aws', 'github', 'stripe', 'digital ocean', 'digitalocean', 'heroku', 'netlify', 'cloudflare'])
-                
-                if is_usd_vendor:
-                    original_currency = 'USD'
-                    original_symbol = '$'
-                    original_total = total
-                # Check if this is likely a MUR vendor (Mauritius)
-                elif any(mur_vendor in vendor_lower for mur_vendor in ['carrefour', 'jumbo', 'winner', 'shoprite mauritius']):
-                    original_currency = 'MUR'
-                    original_symbol = '₨'
-                    original_total = total
-            
-            # Format entry based on whether it's foreign currency or not
-            if original_currency != 'NGN' and original_currency:
-                # Foreign currency: show original + NGN equivalent
-                # For old records where total is stored as original amount, calculate NGN equivalent
-                if original_total == total:
-                    # Old record: need to convert to NGN
-                    exchange_rate = get_exchange_rate(original_currency, "NGN")
-                    ngn_equivalent = original_total * exchange_rate
-                else:
-                    # New record: total is already converted
-                    ngn_equivalent = total
-                    
-                entry = f"- {date}: {vendor} - {original_symbol}{original_total:,.2f} (���{ngn_equivalent:,.2f} equivalent) ({category})"
-                # For totals, use the NGN equivalent
-                amount_for_totals = ngn_equivalent
-            else:
-                # Nigerian Naira: show as-is
-                entry = f"- {date}: {vendor} - ₦{total:,.2f} ({category})"
-                amount_for_totals = total
-            
-            spending_entries.append(entry)
-            
-            # Calculate totals for current month and today (always in NGN)
-            if date:
-                if date.startswith(f"{current_year}-{now.strftime('%m')}"):
-                    total_spending_this_month += amount_for_totals
-                if date == current_date:
-                    total_spending_today += amount_for_totals
-        
-        # Build comprehensive spending context
+        for t in ledger_only_entries:
+            amt = t.get("amount", 0) or 0
+            cur = t.get("currency") or "NGN"
+            symbol = "₦" if cur == "NGN" else cur + " "
+            spending_entries.append(
+                f"- {t.get('date')}: {t.get('vendor')} - {symbol}{amt:,.2f} ({t.get('category')})"
+            )
+
+        # Build comprehensive spending context. The SPENDING SUMMARY figures are
+        # authoritative (combine receipts + bank alerts) - the AI should quote
+        # them exactly rather than re-adding the itemized list itself.
         history_context = f"""
         === ALL TRANSACTIONS/RECEIPTS ===
         {chr(10).join(spending_entries) if spending_entries else "No transactions recorded."}
         
-        === SPENDING SUMMARY ===
-        - Total spent this month ({now.strftime('%B')} {current_year}): ₦{total_spending_this_month:,.2f}
-        - Total spent today ({current_date}): ₦{total_spending_today:,.2f}
+        === SPENDING SUMMARY (authoritative - quote exactly) ===
+        - Total spent today ({ledger_summary.get('today_date', current_date)}): ₦{ledger_summary.get('spent_today', 0):,.2f}
+        - Total spent this week (since Monday): ₦{ledger_summary.get('spent_this_week', 0):,.2f}
+        - Total spent this month ({now.strftime('%B')} {current_year}): ₦{ledger_summary.get('spent_this_month', 0):,.2f}
         """
         
         # 2. Search for existing saving goals
@@ -1377,7 +1371,26 @@ async def chat_with_history(query: dict):
            - "Account Balances:" for account info
            This prevents confusion when displaying mixed data types.
         """
-        
+
+        if channel == "whatsapp":
+            advisor_prompt += """
+
+        ### WHATSAPP MESSAGE FORMATTING (THIS REPLY IS SENT AS A PLAIN WHATSAPP TEXT MESSAGE):
+        - NEVER use the asterisk character (*) anywhere in your reply - no markdown bold (*text*), no
+          asterisk bullet points, no asterisk emphasis of any kind. A stray asterisk renders literally on
+          WhatsApp and looks broken.
+        - Use UPPERCASE for section headers and key labels instead of bold syntax, e.g. MERCHANT:,
+          TOTAL OUTFLOW:, FINANCIAL SNAPSHOT, CATEGORY:, BALANCE:.
+        - For any list of transactions or items, use the bullet "▪️" - never *, -, or numbers.
+        - Only use these subtle, professional emojis, and only as section header markers: 💳 📊 🏛️ ▪️.
+          Never use bright or casual emojis (no 🍕 🛒 🥳 😀, etc).
+        - Keep details grouped tightly with no blank line between a header and the lines beneath it.
+          Leave exactly ONE blank line between major sections.
+        - End the response with exactly one short footer line, italicized with single underscores,
+          e.g. _Loamy - your financial companion_
+        - Do not use any other markdown (#, backticks, double underscores, tildes, etc).
+        """
+
         response = model.generate_content(advisor_prompt)
         reply_text = response.text
 
@@ -1480,11 +1493,68 @@ async def _whatsapp_ai_handler(text: str, from_phone: str) -> str:
             "=== END SNAPSHOT ===\n\n"
         ) + text
 
-    result = await chat_with_history({"text": text, "user_id": user_id})
+    result = await chat_with_history({"text": text, "user_id": user_id, "channel": "whatsapp"})
     return result.get("reply", "")
 
 
 set_ai_handler(_whatsapp_ai_handler)
+
+
+async def _whatsapp_receipt_handler(file_data: bytes, mime_type: str, from_phone: str) -> str:
+    """Turn a receipt photo sent over WhatsApp into a saved expense.
+
+    Same identity path as the text handler (phone -> Supabase user), then reuses
+    the SHARED process_receipt_image() pipeline so a WhatsApp photo and a web
+    upload land as identical dashboard entries. Returns the confirmation text
+    whatsapp.py sends back to the user."""
+    try:
+        lookup = await asyncio.to_thread(database.get_user_by_phone, from_phone)
+    except Exception as e:
+        print(f"[WhatsApp receipt] user lookup failed for {from_phone}: {e}")
+        return "I couldn't reach your account right now. Please try again shortly."
+
+    user_row = lookup.get("data") if lookup.get("status") == "success" else None
+    if not user_row:
+        return ("I couldn't find a Loamy account linked to this number yet. "
+                "Open the Loamy web app, go to your Dashboard, and use "
+                "\"Connect WhatsApp\" to link this number - then resend your receipt.")
+    user_id = user_row["user_id"]
+
+    result = await asyncio.to_thread(process_receipt_image, file_data, mime_type, user_id)
+
+    if not result or result.get("error"):
+        return "I couldn't read that receipt clearly. Please try a sharper, well-lit photo."
+
+    analysis = result.get("analysis", {}) or {}
+    vendor = (analysis.get("vendor") or "the vendor").upper()
+    category = (analysis.get("category") or "Uncategorized").upper()
+    cur = result.get("currency_info", {}) or {}
+    ngn = cur.get("displayed_amount")
+
+    if ngn is not None:
+        try:
+            amount_str = f"\u20a6{float(ngn):,.2f}"
+        except (TypeError, ValueError):
+            amount_str = "the amount"
+        if cur.get("is_estimate"):
+            amount_str += " (estimated)"
+    else:
+        amount_str = "the amount"
+
+    # Matches the WhatsApp house style: uppercase labels, no asterisks, plain
+    # square bullet, italic footer (see the WHATSAPP MESSAGE FORMATTING rules
+    # in chat_with_history for the same convention on chat replies).
+    return (
+        f"💳 RECEIPT LOGGED\n"
+        f"MERCHANT: {vendor}\n"
+        f"AMOUNT: {amount_str}\n"
+        f"CATEGORY: {category}\n"
+        f"\n"
+        f"_Synced to your Loamy dashboard_"
+    )
+
+
+set_receipt_handler(_whatsapp_receipt_handler)
 
 
 @app.get("/get-goals")
