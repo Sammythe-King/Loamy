@@ -22,6 +22,10 @@ from whatsapp import router as whatsapp_router, set_ai_handler, set_receipt_hand
 
 app = FastAPI()
 
+@app.get("/")
+def read_root():
+    return {"status": "healthy", "service": "Loamy Backend"}
+
 # Include chat routes
 app.include_router(chat_router)
 # Include WhatsApp webhook routes
