@@ -22,10 +22,6 @@ from whatsapp import router as whatsapp_router, set_ai_handler, set_receipt_hand
 
 app = FastAPI()
 
-@app.get("/")
-def read_root():
-    return {"status": "healthy", "service": "Loamy Backend"}
-
 # Include chat routes
 app.include_router(chat_router)
 # Include WhatsApp webhook routes
@@ -154,6 +150,33 @@ def _invoice_reminder_job():
     create_invoice_reminder()
 
 
+# --- Periodic Gmail auto-sync (keeps data fresh with no browser open) --------
+# root cause of "info doesn't update on its own": run_server_side_gmail_sync /
+# maybe_autosync_all_users already exist below and CAN sync a user's bank data
+# entirely server-side (mint an access token from their stored refresh token),
+# but the only caller was GET /get-dashboard-data - i.e. sync only fired when
+# someone had the WEB dashboard open. A WhatsApp-only user (laptop off, no
+# dashboard tab) never triggered it, so their balance/spending on WhatsApp went
+# stale. This job calls the same maybe_autosync_all_users() on a fixed interval
+# instead, so every linked user's data refreshes on its own regardless of
+# which channel (web or WhatsApp) they actually use. Each user is still
+# individually throttled by SERVER_SYNC_COOLDOWN_SECONDS, so a short interval
+# here doesn't cause extra Gmail API load.
+GMAIL_AUTOSYNC_INTERVAL_MINUTES = 10
+
+
+def _gmail_autosync_job():
+    """Wrapper the scheduler calls every GMAIL_AUTOSYNC_INTERVAL_MINUTES."""
+    print("[Scheduler] Running periodic Gmail auto-sync for all linked users...")
+    try:
+        # maybe_autosync_all_users is defined later in this module, but by the
+        # time the scheduler actually invokes this job (after app startup) the
+        # whole module has finished loading, so the name resolves fine.
+        asyncio.run(maybe_autosync_all_users(force=False))
+    except Exception as e:
+        print(f"[Scheduler] Gmail auto-sync job failed: {e}")
+
+
 # Build the scheduler lazily so a missing apscheduler install can't crash import.
 scheduler = None
 try:
@@ -168,6 +191,14 @@ try:
         id="daily_invoice_reminder",
         replace_existing=True,
     )
+    # Periodic Gmail auto-sync so WhatsApp-only usage still stays up to date.
+    scheduler.add_job(
+        _gmail_autosync_job,
+        "interval",
+        minutes=GMAIL_AUTOSYNC_INTERVAL_MINUTES,
+        id="periodic_gmail_autosync",
+        replace_existing=True,
+    )
 except Exception as e:  # pragma: no cover - environment without apscheduler
     print(f"[Scheduler] APScheduler unavailable, scheduled jobs disabled: {e}")
 
@@ -179,7 +210,8 @@ def _start_scheduler():
         scheduler.start()
         print(
             f"[Scheduler] Started. Daily invoice reminder set for "
-            f"{INVOICE_REMINDER_HOUR}:00."
+            f"{INVOICE_REMINDER_HOUR}:00, Gmail auto-sync every "
+            f"{GMAIL_AUTOSYNC_INTERVAL_MINUTES} min."
         )
 
 
