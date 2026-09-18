@@ -70,6 +70,18 @@ async def owner_kill_switch(request: _StarletteRequest, call_next):
 async def health():
     return {"status": "success", "data": {"disabled": _kill_switch_active()}, "error": None}
 
+
+# Root route so Render's internal health check succeeds.
+# Root cause of the "Timed Out" deploy failure: the app booted fine (uvicorn was
+# up on port 10000), but Render pings GET / to decide the deploy is healthy and
+# there was no "/" route - every probe got "GET / HTTP/1.1 404 Not Found", so the
+# health check never saw a 2xx and Render eventually timed out and marked the
+# deploy failed. A lightweight 200 at "/" (GET and HEAD, since Render probes with
+# both) fixes that without affecting any existing endpoint.
+@app.api_route("/", methods=["GET", "HEAD"])
+async def root():
+    return {"status": "success", "data": {"service": "loamy-backend", "ok": True}, "error": None}
+
 # --- FIX: MOVE THE VAULT OUTSIDE THE PROJECT FOLDER ---
 # By using ../ we save the database one folder UP, so Live Server won't see it and refresh your page!
 db_path = os.path.join(os.path.dirname(__file__), "..", "fintech_ai_vault_hidden")
