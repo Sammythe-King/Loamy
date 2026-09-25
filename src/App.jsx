@@ -21,22 +21,24 @@ export default function App() {
   useGlobalActivitySync({ enabled: true, debounceMs: 2000 });
 
   return (
-    <Routes>
-      {/* Auth Routes */}
-      <Route path="/" element={<Login />} />
-      <Route path="/onboarding" element={<OnboardingWizard />} />
-      <Route path="/signup" element={<SignUp />} />
+    <>
+      <Routes>
+        {/* Auth Routes */}
+        <Route path="/" element={<Login />} />
+        <Route path="/onboarding" element={<OnboardingWizard />} />
+        <Route path="/signup" element={<SignUp />} />
 
-      {/* Main App Routes */}
-      <Route path="/dashboard" element={<Dashboard />} />
-      <Route path="/chat" element={<ChatPage />} />
-      <Route path="/goals" element={<GoalsPage />} />
-      <Route path="/gmail-connect" element={<GmailConnectPage />} />
-      <Route path="/invoices" element={<InvoicesPage />} />
-      <Route path="/review-queue" element={<ReviewQueuePage />} />
+        {/* Main App Routes */}
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/chat" element={<ChatPage />} />
+        <Route path="/goals" element={<GoalsPage />} />
+        <Route path="/gmail-connect" element={<GmailConnectPage />} />
+        <Route path="/invoices" element={<InvoicesPage />} />
+        <Route path="/review-queue" element={<ReviewQueuePage />} />
 
-      {/* Aliases for convenience */}
-      <Route path="/spending" element={<Dashboard />} />
-    </Routes>
+        {/* Aliases for convenience */}
+        <Route path="/spending" element={<Dashboard />} />
+      </Routes>
+    </>
   );
 }

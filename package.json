@@ -16,9 +16,11 @@
     "@fortawesome/free-solid-svg-icons": "^7.2.0",
     "@fortawesome/react-fontawesome": "^3.3.1",
     "chart.js": "^4.5.1",
+    "driver.js": "^1.8.0",
     "react": "^19.2.4",
     "react-chartjs-2": "^5.3.1",
     "react-dom": "^19.2.4",
+    "react-joyride": "^3.2.0",
     "react-router-dom": "^7.15.0",
     "recharts": "^3.8.1"
   },

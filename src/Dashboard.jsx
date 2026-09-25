@@ -4,6 +4,8 @@ import { useNavigate } from "react-router-dom";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import NotificationBanner from "./NotificationBanner";
 import { runActivitySync } from "./services/activitySyncService";
+import OnboardingTour from "./onboarding/OnboardingTour";
+import { TOUR_STORAGE_PREFIX } from "./onboarding/tourStorage";
 
 const API_URL = "http://127.0.0.1:8000";
 
@@ -174,20 +176,8 @@ const Dashboard = () => {
   const [invoiceSummary, setInvoiceSummary] = useState({ total_unpaid: 0, total_paid: 0, unpaid_count: 0, paid_count: 0 });
   // True while a manual "Refresh Data" sync is pulling fresh Gmail data.
   const [refreshing, setRefreshing] = useState(false);
-
-  useEffect(() => {
-    fetchDashboardData();
-    fetchInvoices();
-
-    // When the background sync pulls fresh bank emails, re-fetch the dashboard
-    // so balances/transactions update without a manual refresh or reconnect.
-    const handleDataSynced = () => {
-      fetchDashboardData();
-      fetchInvoices();
-    };
-    window.addEventListener("loamy:data-synced", handleDataSynced);
-    return () => window.removeEventListener("loamy:data-synced", handleDataSynced);
-  }, []);
+  // Bumped by the nav "Tour" button to replay the onboarding tour on demand.
+  const [tourReplaySignal, setTourReplaySignal] = useState(0);
 
   const fetchInvoices = async () => {
     try {
@@ -230,7 +220,9 @@ const Dashboard = () => {
       console.error("[v0] Manual refresh sync failed:", err);
       try {
         await runActivitySync({ force: true, fullResync: true });
-      } catch (_) {}
+      } catch {
+        // Client-side fallback is best-effort; the server sync already failed.
+      }
     } finally {
       await Promise.all([fetchDashboardData(), fetchInvoices()]);
       setRefreshing(false);
@@ -257,8 +249,37 @@ const Dashboard = () => {
     }
   };
 
+  // Initial load + re-fetch when the background sync pulls fresh bank emails,
+  // so balances/transactions update without a manual refresh or reconnect.
+  // (Declared after the fetchers it calls to keep the hook deps honest.)
+  /* eslint-disable react-hooks/set-state-in-effect -- mount-time data load;
+     the fetchers only setState after their awaits resolve. The same accepted
+     pattern is used across the app (NotificationBanner, ReviewQueue, ...). */
+  useEffect(() => {
+    fetchDashboardData();
+    fetchInvoices();
+    const handleDataSynced = () => {
+      fetchDashboardData();
+      fetchInvoices();
+    };
+    window.addEventListener("loamy:data-synced", handleDataSynced);
+    return () => window.removeEventListener("loamy:data-synced", handleDataSynced);
+  }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
   const handleLogout = () => {
+    // Wipe the session, but preserve the per-user tour status keys
+    // (loamy_tour_status_<id>) so a completed/skipped tour isn't re-offered
+    // to the same user after logging back in.
+    const preservedTourEntries = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(TOUR_STORAGE_PREFIX)) {
+        preservedTourEntries.push([key, localStorage.getItem(key)]);
+      }
+    }
     localStorage.clear();
+    preservedTourEntries.forEach(([key, value]) => localStorage.setItem(key, value));
     navigate("/");
   };
 
@@ -310,7 +331,7 @@ const Dashboard = () => {
   return (
     <div className="dashboard-container">
       {/* Navigation */}
-      <nav className="dashboard-nav">
+      <nav className="dashboard-nav" data-tour="nav">
         <div className="nav-brand">
           <h3>Loamy</h3>
         </div>
@@ -327,6 +348,14 @@ const Dashboard = () => {
             <i className="fa-solid fa-comments"></i>
             <span>Chat</span>
           </button>
+          <button
+            onClick={() => setTourReplaySignal((s) => s + 1)}
+            className="nav-btn"
+            title="Replay the product tour"
+          >
+            <i className="fa-solid fa-circle-question"></i>
+            <span>Tour</span>
+          </button>
           <button onClick={handleLogout} className="nav-btn logout-btn">
             <i className="fa-solid fa-right-from-bracket"></i>
           </button>
@@ -334,7 +363,7 @@ const Dashboard = () => {
       </nav>
 
       {/* Greeting */}
-      <div className="greeting-section">
+      <div className="greeting-section" data-tour="greeting">
         <h1>{getGreeting()} <span role="img" aria-label="wave">👋</span></h1>
         <p>Here&apos;s your financial overview for today</p>
         {error && <p className="error-message">{error}</p>}
@@ -346,7 +375,7 @@ const Dashboard = () => {
       {/* Main Content Grid */}
       <div className="dashboard-grid">
         {/* Cash Flow Overview */}
-        <div className="card cashflow-card">
+        <div className="card cashflow-card" data-tour="cashflow">
           <div className="card-header">
             <i className="fa-solid fa-wallet" style={{ color: "green" }}></i>
             <h3>Cash Flow Overview</h3>
@@ -377,7 +406,7 @@ const Dashboard = () => {
         </div>
 
         {/* Business Runway */}
-        <div className="card runway-card">
+        <div className="card runway-card" data-tour="runway">
           <div className="card-header">
             <i className="fa-solid fa-clock" style={{ color: "#f59e0b" }}></i>
             <h3>Business Runway</h3>
@@ -390,7 +419,7 @@ const Dashboard = () => {
         </div>
 
         {/* Expense Breakdown */}
-        <div className="card expense-card">
+        <div className="card expense-card" data-tour="expense-breakdown">
           <div className="card-header">
             <i className="fa-solid fa-chart-pie" style={{ color: "#2E7D32" }}></i>
             <h3>Expense Breakdown</h3>
@@ -404,7 +433,7 @@ const Dashboard = () => {
         </div>
 
         {/* Recent Invoices */}
-        <div className="card accounts-card">
+        <div className="card accounts-card" data-tour="invoices">
           <div className="card-header">
             <i className="fa-solid fa-file-invoice-dollar" style={{ color: "#225a24" }}></i>
             <h3>Recent Invoices</h3>
@@ -525,7 +554,7 @@ const Dashboard = () => {
 
         {/* Needs Review */}
         {needs_review && needs_review.length > 0 ? (
-          <div className="card needs-review-card review-col">
+          <div className="card needs-review-card review-col" data-tour="needs-review">
             <div className="card-header">
               <i className="fa-solid fa-circle-exclamation" style={{ color: "#F4A261" }}></i>
               <h3>Needs Review ({needs_review.length})</h3>
@@ -563,7 +592,7 @@ const Dashboard = () => {
             </div>
           </div>
         ) : (
-          <div className="card needs-review-card review-col review-empty">
+          <div className="card needs-review-card review-col review-empty" data-tour="needs-review">
             <div className="card-header">
               <i className="fa-solid fa-circle-check" style={{ color: "#2E7D32" }}></i>
               <h3>Needs Review</h3>
@@ -606,7 +635,7 @@ const Dashboard = () => {
       </div>
 
       {/* Quick Actions */}
-      <div className="quick-actions">
+      <div className="quick-actions" data-tour="quick-actions">
         <button onClick={() => handleNavigation("/chat")} className="quick-action-btn primary">
           <i className="fa-solid fa-comments"></i>
           Ask Loamy AI
@@ -616,6 +645,11 @@ const Dashboard = () => {
           {refreshing ? "Refreshing..." : "Refresh Data"}
         </button>
       </div>
+
+      {/* First-time product tour (Driver.js). Rendered only after the loading
+          spinner resolves so every data-tour target exists in the DOM.
+          Auto-starts once per user; the nav "Tour" button replays it. */}
+      <OnboardingTour userId={getSessionUserId()} replaySignal={tourReplaySignal} />
     </div>
   );
 };
