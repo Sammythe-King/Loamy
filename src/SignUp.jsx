@@ -1,10 +1,10 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import Logo from "./assets/LoamyLogo.png";
+import Logo from "./assets/loamylogo.png";
 import { GoogleGlyph } from "./Login";
 import "./Login.css";
 
-const API_URL = "http://127.0.0.1:8000";
+const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
 // Same Google OAuth config as Login.jsx - reuses the "Connect Gmail"
 // redirect URI (/gmail-connect) since that's the only one already

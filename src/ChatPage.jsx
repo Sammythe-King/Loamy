@@ -8,11 +8,11 @@ import {
     faEllipsis, faPen, faTrash, faCheck, faFileInvoiceDollar,
     faFilePdf, faFileWord, faFileExcel, faFileImage, faFileLines
 } from "@fortawesome/free-solid-svg-icons";
-import Logo from "./assets/LoamyLogo.png";
+import Logo from "./assets/loamylogo.png";
 import ReviewQueue from "./ReviewQueue.jsx";
 import "./ChatPage.css";
 
-const API_URL = "http://127.0.0.1:8000";
+const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
 // The logged-in user's id. Every per-user request (chats, dashboard, etc.) must
 // be scoped to this so data never leaks between accounts on the same browser.

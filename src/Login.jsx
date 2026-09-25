@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import Logo from "./assets/LoamyLogo.png";
+import Logo from "./assets/loamylogo.png";
 import "./Login.css";
 
-const API_URL = "http://127.0.0.1:8000";
+const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
 // Google OAuth Configuration - reuses the SAME redirect URI as the existing
 // "Connect Gmail" feature (/gmail-connect) because that's the only URI

@@ -5,7 +5,7 @@ import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import NotificationBanner from "./NotificationBanner";
 import { runActivitySync } from "./services/activitySyncService";
 
-const API_URL = "http://127.0.0.1:8000";
+const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
 // Single source of truth for "who is logged in". Every dashboard data request
 // must be scoped to this id, otherwise the backend falls back to a shared
