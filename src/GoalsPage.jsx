@@ -5,7 +5,7 @@ import {
     faPlus, faChevronDown, faChevronRight, faXmark, faPen, faTrash,
     faCheck, faHouse, faComment, faChartPie, faRightFromBracket, faFileInvoiceDollar
 } from "@fortawesome/free-solid-svg-icons";
-import Logo from "./assets/loamylogo.png";
+import Logo from "./assets/LoamyLogo.png";
 import "./GoalsPage.css";
 
 const API_URL = "http://127.0.0.1:8000";

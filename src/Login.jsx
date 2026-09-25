@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import Logo from "./assets/loamylogo.png";
+import Logo from "./assets/LoamyLogo.png";
 import "./Login.css";
 
 const API_URL = "http://127.0.0.1:8000";
