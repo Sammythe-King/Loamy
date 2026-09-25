@@ -8,7 +8,7 @@ import {
     faEllipsis, faPen, faTrash, faCheck, faFileInvoiceDollar,
     faFilePdf, faFileWord, faFileExcel, faFileImage, faFileLines
 } from "@fortawesome/free-solid-svg-icons";
-import Logo from "./assets/loamylogo.png";
+import Logo from "./assets/LoamyLogo.png";
 import ReviewQueue from "./ReviewQueue.jsx";
 import "./ChatPage.css";
 

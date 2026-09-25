@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import Logo from "./assets/loamylogo.png";
+import Logo from "./assets/LoamyLogo.png";
 import { GoogleGlyph } from "./Login";
 import "./Login.css";
 
