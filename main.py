@@ -2252,6 +2252,12 @@ async def get_dashboard_data(user_id: str = "default"):
             amount = tx['amount']
             tx_type = tx['type']
             category = normalize_category(tx.get('category', 'Other') or 'Other')
+            # "Banking" is only the raw-alert placeholder, not a real spend
+            # category; without this every un-reviewed debit piles into one slice.
+            if category.strip().lower() in ('banking', 'other', 'uncategorized', ''):
+                guessed = categorize_transaction(tx.get('description', ''))
+                category = 'Uncategorized' if guessed == 'Other' else guessed
+                tx['category'] = category
             
             if tx_type == 'credit':
                 cash_in += amount

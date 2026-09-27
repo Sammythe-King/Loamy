@@ -228,7 +228,9 @@ const GmailConnectPage = () => {
                 }
             }
             
-            if (data.status === "success") {
+            if (data.status === "success" && !data.emails?.length) {
+                await loadEmailData();
+            } else if (data.status === "success") {
                 const emailData = {
                     emails: data.emails,
                     stats: data.stats,
@@ -246,7 +248,30 @@ const GmailConnectPage = () => {
         const cachedData = localStorage.getItem("gmail_email_data");
         if (cachedData) {
             const parsed = JSON.parse(cachedData);
-            displayEmailData(parsed);
+            if (parsed?.emails?.length) {
+                displayEmailData(parsed);
+                return;
+            }
+        }
+        // Nothing cached (e.g. after disconnect/reconnect): the backend already
+        // has this user's stored emails, so show those instead of zeros.
+        const sessionData = JSON.parse(localStorage.getItem("loamy_session") || "{}");
+        if (!isRealUserId(sessionData.user_id)) return;
+        try {
+            const res = await fetch(`${API_URL}/gmail/sync-status/${encodeURIComponent(sessionData.user_id)}`);
+            let data = await res.json();
+            if (data.status === "processing") data = await waitForServerSync(sessionData.user_id);
+            if (data.emails?.length) {
+                const emailData = {
+                    emails: data.emails,
+                    stats: data.stats,
+                    total_scanned: data.stats?.emailsScanned || data.emails.length
+                };
+                localStorage.setItem("gmail_email_data", JSON.stringify(emailData));
+                displayEmailData(emailData);
+            }
+        } catch (error) {
+            console.error("Error loading stored emails:", error);
         }
     };
 
