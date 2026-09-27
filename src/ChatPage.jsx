@@ -8,8 +8,9 @@ import {
     faEllipsis, faPen, faTrash, faCheck, faFileInvoiceDollar,
     faFilePdf, faFileWord, faFileExcel, faFileImage, faFileLines
 } from "@fortawesome/free-solid-svg-icons";
-import Logo from "./assets/LoamyLogo.png";
+import Logo from "./assets/loamylogo.png";
 import ReviewQueue from "./ReviewQueue.jsx";
+import { isRealUserId } from "./services/activitySyncService";
 import "./ChatPage.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
@@ -97,8 +98,13 @@ const ChatPage = () => {
     // Load chat list from backend, scoped to the logged-in user so one user
     // never sees another user's chats in the sidebar.
     const loadChatList = async () => {
+        const userId = getSessionUserId();
+        if (!isRealUserId(userId)) {
+            setChatsLoading(false);
+            return;
+        }
         try {
-            const res = await fetch(`${API_URL}/get-chats?user_id=${encodeURIComponent(getSessionUserId())}`);
+            const res = await fetch(`${API_URL}/get-chats?user_id=${encodeURIComponent(userId)}`);
             const data = await res.json();
             setChatList(data.chats || []);
         } catch (e) {
@@ -779,4 +785,3 @@ const createNewChat = async (title) => {
 };
 
 export default ChatPage;
-

@@ -34,6 +34,36 @@ export const DATA_SYNCED_EVENT = "loamy:data-synced";
 // before the cooldown timestamp is written to localStorage.
 let _syncInFlight = false;
 
+const INVALID_USER_IDS = new Set(["", "default", "default_user", "null", "undefined", "none"]);
+
+/** True only for a real logged-in user id (not a placeholder fallback). */
+export function isRealUserId(userId) {
+  return typeof userId === "string" && !INVALID_USER_IDS.has(userId.trim().toLowerCase());
+}
+
+const POLL_INTERVAL_MS = 3000;
+const POLL_TIMEOUT_MS = 3 * 60 * 1000;
+
+/**
+ * The backend now answers /gmail/fetch-emails with {status:"processing"} and
+ * does the fetch+store in the background. Poll until it finishes and return
+ * the stored {status, emails, stats}.
+ */
+export async function waitForServerSync(userId) {
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    try {
+      const res = await fetch(`${API_URL}/gmail/sync-status/${encodeURIComponent(userId)}`);
+      const data = await res.json();
+      if (data.status !== "processing") return data;
+    } catch (err) {
+      console.error("[v0] Sync: status poll failed:", err);
+    }
+  }
+  return { status: "error", error: "sync_timeout" };
+}
+
 /** Has the cooldown window elapsed since the last sync ATTEMPT? */
 function isCooldownElapsed() {
   const last = Number(localStorage.getItem(LAST_SYNC_KEY) || 0);
@@ -72,18 +102,6 @@ async function refreshAccessToken() {
   return null;
 }
 
-/** Persist fetched emails to the backend so the dashboard/AI can read them. */
-async function persistEmails(emails, stats) {
-  const session = JSON.parse(localStorage.getItem(SESSION_KEY) || "{}");
-  const userId = session.user_id;
-  if (!userId) return;
-  await fetch(`${API_URL}/sync-gmail-data`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId, emails, stats }),
-  });
-}
-
 /**
  * Run one real bank-data sync.
  *
@@ -105,6 +123,12 @@ export async function runActivitySync({ force = false, fullResync = false } = {}
     return { synced: false, reason: "no_gmail_token" };
   }
 
+  const session = JSON.parse(localStorage.getItem(SESSION_KEY) || "{}");
+  const userId = session.user_id;
+  if (!isRealUserId(userId)) {
+    return { synced: false, reason: "no_session" };
+  }
+
   // Cooldown shield: skip if we attempted a sync very recently (unless forced).
   if (!force && !isCooldownElapsed()) {
     return { synced: false, throttled: true, reason: "cooldown" };
@@ -115,10 +139,6 @@ export async function runActivitySync({ force = false, fullResync = false } = {}
   // claim it so a click-spam can't storm the server either.
   claimCooldownSlot();
   _syncInFlight = true;
-
-  // Include user_id so the backend keeps a per-user delta-sync bookmark.
-  const session = JSON.parse(localStorage.getItem(SESSION_KEY) || "{}");
-  const userId = session.user_id || "default";
 
   const doFetch = async (token) => {
     const res = await fetch(`${API_URL}/gmail/fetch-emails`, {
@@ -148,18 +168,21 @@ export async function runActivitySync({ force = false, fullResync = false } = {}
       data = await doFetch(newToken);
     }
 
+    if (data.status === "processing") {
+      data = await waitForServerSync(userId);
+    }
+
     if (data.status !== "success") {
       return { synced: false, reason: data.error || "fetch_failed" };
     }
 
-    // Cache + persist, then stamp the cooldown and announce success.
+    // The backend already stored the emails; just cache locally and announce.
     const emailData = {
-      emails: data.emails,
-      stats: data.stats,
+      emails: data.emails || [],
+      stats: data.stats || {},
       total_scanned: data.stats?.emailsScanned || 0,
     };
     localStorage.setItem("gmail_email_data", JSON.stringify(emailData));
-    await persistEmails(data.emails, data.stats);
 
     // Reset the cooldown clock to completion time and announce success.
     localStorage.setItem(LAST_SYNC_KEY, String(Date.now()));

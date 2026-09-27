@@ -2,6 +2,8 @@
 // All network/API logic for the Review Queue lives here so UI components only
 // care about "how it looks", not "where the data comes from".
 
+import { isRealUserId } from "./activitySyncService";
+
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
 async function safeJson(res) {
@@ -14,6 +16,9 @@ async function safeJson(res) {
 
 // Fetch all pending review items for a user.
 export async function fetchReviewQueue(userId) {
+  if (!isRealUserId(userId)) {
+    return { status: "error", data: null, error: "no_session" };
+  }
   const res = await fetch(`${API_URL}/review-queue/${encodeURIComponent(userId)}`);
   return safeJson(res);
 }

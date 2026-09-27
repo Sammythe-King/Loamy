@@ -6,6 +6,7 @@ import {
     faBuilding, faFile, faShieldHalved, faRotate, faPlug
 } from "@fortawesome/free-solid-svg-icons";
 import "./GmailConnectPage.css";
+import { isRealUserId, waitForServerSync } from "./services/activitySyncService";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
@@ -199,14 +200,18 @@ const GmailConnectPage = () => {
         try {
             // Pass user_id so the backend tracks this user's delta-sync bookmark.
             const sessionData = JSON.parse(localStorage.getItem("loamy_session") || "{}");
-            const userId = sessionData.user_id || "default";
+            const userId = sessionData.user_id;
+            if (!isRealUserId(userId)) return;
             const response = await fetch(`${API_URL}/gmail/fetch-emails`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ access_token: accessToken, user_id: userId })
             });
             
-            const data = await response.json();
+            let data = await response.json();
+            if (data.status === "processing") {
+                data = await waitForServerSync(userId);
+            }
             
             // Check if token expired - try to refresh
             if (data.requires_reauth || data.error === "token_expired" || 
@@ -231,35 +236,9 @@ const GmailConnectPage = () => {
                 };
                 localStorage.setItem("gmail_email_data", JSON.stringify(emailData));
                 displayEmailData(emailData);
-                
-                // Sync Gmail data to database so AI has access
-                await syncGmailDataToDatabase(data.emails, data.stats);
             }
         } catch (error) {
             console.error("Error fetching emails:", error);
-        }
-    };
-    
-    const syncGmailDataToDatabase = async (emails, stats) => {
-        try {
-            const sessionData = JSON.parse(localStorage.getItem("loamy_session") || "{}");
-            const userId = sessionData.user_id;
-            
-            if (!userId) return;
-            
-            await fetch(`${API_URL}/sync-gmail-data`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    user_id: userId,
-                    emails: emails,
-                    stats: stats
-                })
-            });
-            
-            console.log("Gmail data synced to database for AI access");
-        } catch (error) {
-            console.error("Error syncing Gmail data:", error);
         }
     };
 
@@ -322,26 +301,8 @@ const GmailConnectPage = () => {
         }
         
         try {
-            const response = await fetch(`${API_URL}/gmail/fetch-emails`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ access_token: accessToken })
-            });
-            
-            const data = await response.json();
-            
-            if (data.status === "success" && data.emails) {
-                const emailData = {
-                    emails: data.emails,
-                    stats: data.stats,
-                    total_scanned: data.stats?.emailsScanned || 0
-                };
-                localStorage.setItem("gmail_email_data", JSON.stringify(emailData));
-                displayEmailData(emailData);
-                
-                // Sync to database for AI access
-                await syncGmailDataToDatabase(data.emails, data.stats);
-            }
+            // fetchEmails handles token refresh, background polling and caching.
+            await fetchEmails(accessToken);
         } catch (error) {
             console.error("Error fetching emails:", error);
             

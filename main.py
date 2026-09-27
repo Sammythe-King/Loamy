@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 import google.generativeai as genai
 import chromadb
@@ -27,12 +27,47 @@ app.include_router(chat_router)
 # Include WhatsApp webhook routes
 app.include_router(whatsapp_router)
 
+ALLOWED_ORIGINS = [
+    "https://loamy-ebon.vercel.app",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+] + [o.strip() for o in os.getenv("EXTRA_CORS_ORIGINS", "").split(",") if o.strip()]
+# Vercel preview deployments of the frontend (loamy-<hash>-<team>.vercel.app).
+ALLOWED_ORIGIN_REGEX = r"^https://loamy[a-z0-9-]*\.vercel\.app$"
+_allowed_origin_re = re.compile(ALLOWED_ORIGIN_REGEX)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _cors_headers_for(request: Request) -> dict:
+    origin = request.headers.get("origin")
+    if origin and (origin in ALLOWED_ORIGINS or _allowed_origin_re.match(origin)):
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Vary": "Origin",
+        }
+    return {}
+
+
+# Starlette routes unhandled exceptions to ServerErrorMiddleware, which sits
+# OUTSIDE CORSMiddleware, so a naked 500 ships without CORS headers and the
+# browser misreports it as a CORS failure. Attach the headers here explicitly.
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    print(f"[Unhandled] {request.method} {request.url.path}: {type(exc).__name__}: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"status": "error", "data": None, "error": "internal_server_error"},
+        headers=_cors_headers_for(request),
+    )
 
 # ============================================
 # OWNER KILL SWITCH
@@ -4305,12 +4340,12 @@ async def run_server_side_gmail_sync(user_id, force=False):
         return {"synced": False, "reason": "token_mint_failed"}
 
     try:
-        fetched = await fetch_gmail_emails(
+        fetched = await _fetch_gmail_emails_core(
             {"access_token": access_token, "user_id": user_id, "full_resync": force}
         )
         if fetched.get("status") != "success":
             return {"synced": False, "reason": fetched.get("error", "fetch_failed")}
-        await sync_gmail_data(
+        await _sync_gmail_data_core(
             {"user_id": user_id, "emails": fetched.get("emails", []), "stats": fetched.get("stats", {})}
         )
         return {"synced": True, "count": len(fetched.get("emails", []))}
@@ -4452,8 +4487,130 @@ def set_last_synced_timestamp(user_id, epoch_seconds):
         print(f"[Delta Sync] Could not write bookmark for {user_id}: {e}")
 
 
+INVALID_USER_IDS = {"", "default", "default_user", "null", "undefined", "none"}
+_bg_sync_results = {}
+# Serializes read-merge-write of the per-user Gmail blob across worker threads.
+_gmail_blob_lock = threading.Lock()
+
+
+def _is_real_user_id(user_id) -> bool:
+    return isinstance(user_id, str) and user_id.strip().lower() not in INVALID_USER_IDS
+
+
+def _background_fetch_and_store(access_token: str, user_id: str, full_resync: bool):
+    """Runs in FastAPI's threadpool (sync def) with its own event loop, so the
+    blocking Gmail/ChromaDB/Supabase work never touches the request event loop."""
+    result = {"ok": False, "reason": None, "count": 0}
+    try:
+        fetched = asyncio.run(_fetch_gmail_emails_core(
+            {"access_token": access_token, "user_id": user_id, "full_resync": full_resync}
+        ))
+        if fetched.get("status") != "success":
+            result["reason"] = fetched.get("error", "fetch_failed")
+            return
+        with _gmail_blob_lock:
+            asyncio.run(_sync_gmail_data_core({
+                "user_id": user_id,
+                "emails": fetched.get("emails", []),
+                "stats": fetched.get("stats", {}),
+            }))
+        result.update(ok=True, count=len(fetched.get("emails", [])))
+    except Exception as e:
+        print(f"[BG Gmail] fetch+store failed for {user_id}: {e}")
+        result["reason"] = str(e)
+    finally:
+        result["finished_at"] = datetime.now().isoformat()
+        _bg_sync_results[user_id] = result
+        with _active_bg_syncs_lock:
+            _active_bg_syncs.discard(user_id)
+
+
+def _background_store_only(payload: dict):
+    try:
+        with _gmail_blob_lock:
+            asyncio.run(_sync_gmail_data_core(payload))
+    except Exception as e:
+        print(f"[BG Gmail] store failed for {payload.get('user_id')}: {e}")
+
+
 @app.post("/gmail/fetch-emails")
-async def fetch_gmail_emails(data: dict):
+async def fetch_gmail_emails(data: dict, background_tasks: BackgroundTasks):
+    """Validate the token, then fetch + store emails in the background."""
+    data = data or {}
+    access_token = data.get("access_token")
+    user_id = str(data.get("user_id") or "").strip()
+    full_resync = bool(data.get("full_resync", False))
+
+    if not access_token:
+        return {"status": "error", "error": "No access token provided"}
+    if not _is_real_user_id(user_id):
+        return {"status": "error", "error": "invalid_user_id"}
+
+    # Quick token check off the event loop so the frontend can still run its
+    # refresh-token flow synchronously on a 401.
+    try:
+        probe = await asyncio.to_thread(
+            requests.get,
+            "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        if probe.status_code == 401:
+            return {
+                "status": "error",
+                "error": "token_expired",
+                "message": "Your Gmail session has expired. Please reconnect your Gmail account.",
+                "requires_reauth": True,
+            }
+    except Exception as e:
+        return {"status": "error", "error": f"gmail_unreachable: {e}"}
+
+    with _active_bg_syncs_lock:
+        if user_id in _active_bg_syncs:
+            return {"status": "processing", "already_running": True}
+        _active_bg_syncs.add(user_id)
+
+    background_tasks.add_task(_background_fetch_and_store, access_token, user_id, full_resync)
+    return {"status": "processing"}
+
+
+@app.get("/gmail/sync-status/{user_id}")
+async def gmail_sync_status(user_id: str):
+    """Poll target for the frontend after /gmail/fetch-emails returns 'processing'."""
+    if not _is_real_user_id(user_id):
+        return {"status": "error", "error": "invalid_user_id"}
+    with _active_bg_syncs_lock:
+        in_flight = user_id in _active_bg_syncs
+    if in_flight:
+        return {"status": "processing"}
+
+    def _read_blob():
+        stored = gmail_data_collection.get(ids=[f"gmail_{user_id}"])
+        if not stored["documents"]:
+            return {"emails": [], "stats": {}}
+        return json.loads(stored["documents"][0])
+
+    try:
+        blob = await asyncio.to_thread(_read_blob)
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+    emails = sorted(
+        blob.get("emails", []),
+        key=lambda e: e.get("internal_date_ms") or 0,
+        reverse=True,
+    )[:500]
+    last = _bg_sync_results.get(user_id) or {}
+    return {
+        "status": "success" if last.get("ok", True) else "error",
+        "error": last.get("reason"),
+        "emails": emails,
+        "stats": blob.get("stats", {}),
+        "finished_at": last.get("finished_at"),
+    }
+
+
+async def _fetch_gmail_emails_core(data: dict):
     """Fetch financial emails from Gmail using an incremental delta sync."""
     try:
         access_token = data.get("access_token")
@@ -5627,7 +5784,23 @@ def detect_currency(body, subject, sender_email):
 
 
 @app.post("/sync-gmail-data")
-async def sync_gmail_data(data: dict):
+async def sync_gmail_data(data: dict, background_tasks: BackgroundTasks):
+    """Validate the payload, then merge/store it in the background."""
+    data = data or {}
+    user_id = str(data.get("user_id") or "").strip()
+    emails = data.get("emails", [])
+    stats = data.get("stats", {})
+    if not _is_real_user_id(user_id):
+        return {"status": "error", "error": "invalid_user_id"}
+    if not isinstance(emails, list) or not isinstance(stats, dict):
+        return {"status": "error", "error": "invalid_payload"}
+    background_tasks.add_task(
+        _background_store_only, {"user_id": user_id, "emails": emails, "stats": stats}
+    )
+    return {"status": "processing"}
+
+
+async def _sync_gmail_data_core(data: dict):
     """Sync Gmail email data to database for AI context"""
     try:
         user_id = data.get("user_id", "default_user")

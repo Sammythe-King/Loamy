@@ -14,7 +14,9 @@ Wiring lives in main.py:
 """
 
 import os
+import re
 import asyncio
+import time
 import requests
 from fastapi import APIRouter, Request, Response, Query, BackgroundTasks
 
@@ -61,6 +63,31 @@ def set_receipt_handler(handler):
 
 
 # ============================================
+# 0. Outbound text sanitizer (WhatsApp house style)
+# ============================================
+def sanitize_whatsapp_text(text: str) -> str:
+    """Safety net that enforces the WhatsApp "no asterisks" house style.
+
+    The AI persona (see chat_with_history's WHATSAPP MESSAGE FORMATTING rules)
+    is instructed never to emit asterisks, but LLM output isn't 100% guaranteed
+    to follow that every time. This runs on EVERY outbound message - AI replies,
+    receipt confirmations, and error strings alike - so a stray *bold* or "* "
+    bullet never reaches the user as a literal, broken-looking asterisk.
+    """
+    if not text:
+        return text
+    # Markdown bold, e.g. **Total** or *Total* -> Total (unwrap, don't strip content).
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"\*(.+?)\*", r"\1", text)
+    # A leftover "* Item" bullet (e.g. the ALLOCATE/CREATE_INVOICE prompt syntax
+    # shared with the web chat) becomes the house square bullet instead.
+    text = re.sub(r"(?m)^(\s*)\*\s+", r"\1▪️ ", text)
+    # Anything else stray (e.g. an unmatched "*") is dropped outright.
+    text = text.replace("*", "")
+    return text
+
+
+# ============================================
 # 1. Outbound message helper
 # ============================================
 async def send_whatsapp_message(to_phone: str, text: str):
@@ -73,6 +100,7 @@ async def send_whatsapp_message(to_phone: str, text: str):
         print("[WhatsApp] Missing WHATSAPP_ACCESS_TOKEN / WHATSAPP_PHONE_NUMBER_ID; cannot send.")
         return {"status": "error", "data": None, "error": "missing_credentials"}
 
+    text = sanitize_whatsapp_text(text)
     url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}",
@@ -187,6 +215,35 @@ async def verify_webhook(
 # ============================================
 # 3. Incoming message receiver (POST)
 # ============================================
+_seen_message_ids = {}
+_SEEN_TTL_SECONDS = 60 * 60
+
+
+def _already_seen(msg_id: str) -> bool:
+    """Drop Meta's retry deliveries of a message we've already queued."""
+    if not msg_id:
+        return False
+    now = time.time()
+    for mid, ts in list(_seen_message_ids.items()):
+        if now - ts > _SEEN_TTL_SECONDS:
+            _seen_message_ids.pop(mid, None)
+    if msg_id in _seen_message_ids:
+        return True
+    _seen_message_ids[msg_id] = now
+    return False
+
+
+def _run_in_worker(coro_fn, *args):
+    """Sync wrapper: FastAPI runs sync background tasks in its threadpool, and
+    asyncio.run gives the coroutine its own loop there. Async background tasks
+    would otherwise run on the main loop, where blocking Gemini/ChromaDB calls
+    freeze every other request."""
+    try:
+        asyncio.run(coro_fn(*args))
+    except Exception as e:
+        print(f"[WhatsApp] Background task {coro_fn.__name__} crashed: {e}")
+
+
 @router.post("/api/whatsapp/webhook")
 async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
     """Acknowledge Meta immediately (prevents retries), then reply in the
@@ -195,7 +252,7 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
         payload = await request.json()
     except Exception:
         # Even malformed payloads must get a 200 so Meta stops retrying.
-        return {"status": "success"}
+        return {"status": "processing"}
 
     try:
         value = payload["entry"][0]["changes"][0]["value"]
@@ -206,10 +263,12 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
             from_phone = message["from"]
             msg_id = message.get("id", "")
 
-            if msg_type == "text":
+            if _already_seen(msg_id):
+                print(f"[WhatsApp] Duplicate delivery {msg_id} ignored.")
+            elif msg_type == "text":
                 body = message["text"]["body"]
                 print(f"[WhatsApp] Incoming from {from_phone} ({msg_id}): {body}")
-                background_tasks.add_task(_process_and_reply, from_phone, body)
+                background_tasks.add_task(_run_in_worker, _process_and_reply, from_phone, body)
             elif msg_type in ("image", "document"):
                 # Receipt uploads arrive as image (photo) or document (PDF/scan).
                 media_obj = message.get(msg_type, {}) or {}
@@ -217,14 +276,16 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
                 caption = media_obj.get("caption", "")
                 print(f"[WhatsApp] Incoming {msg_type} from {from_phone} ({msg_id}), media={media_id}")
                 if media_id:
-                    background_tasks.add_task(_process_receipt_and_reply, from_phone, media_id, caption)
+                    background_tasks.add_task(
+                        _run_in_worker, _process_receipt_and_reply, from_phone, media_id, caption
+                    )
             else:
                 print(f"[WhatsApp] Ignoring unsupported message type '{msg_type}' from {from_phone}.")
     except (KeyError, IndexError, TypeError) as e:
         # Status/delivery callbacks and other event shapes land here - not errors.
         print(f"[WhatsApp] Non-message webhook ignored: {e}")
 
-    return {"status": "success"}
+    return {"status": "processing"}
 
 
 # ============================================
