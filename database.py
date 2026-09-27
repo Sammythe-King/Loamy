@@ -853,3 +853,98 @@ def delete_gmail_credentials(user_id: str) -> dict:
         return _ok(res.data)
     except Exception as e:
         return _err(e)
+
+
+# ============================================
+# WhatsApp message dedupe (survives restarts)
+# ============================================
+def _is_unique_violation(exc: Exception) -> bool:
+    text = str(exc)
+    return "23505" in text or "duplicate key" in text.lower()
+
+
+def claim_whatsapp_message(message_id: str, phone_number: str) -> dict:
+    """Atomically record a message id. data=True when this call claimed it
+    (first delivery), data=False when it was already processed (Meta retry).
+    The primary key makes the check-and-insert a single race-free step."""
+    try:
+        supabase.table("whatsapp_processed_messages").insert({
+            "message_id": message_id,
+            "phone_number": phone_number,
+        }).execute()
+        return _ok(True)
+    except Exception as e:
+        if _is_unique_violation(e):
+            return _ok(False)
+        return _err(e)
+
+
+def release_whatsapp_message(message_id: str) -> dict:
+    """Undo a claim when processing crashed, so Meta's retry can succeed."""
+    try:
+        supabase.table("whatsapp_processed_messages").delete().eq("message_id", message_id).execute()
+        return _ok(True)
+    except Exception as e:
+        return _err(e)
+
+
+# ============================================
+# Gmail sync jobs (one row per user)
+# ============================================
+SYNC_JOB_STALE_MINUTES = 5
+
+
+def _parse_ts(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def set_sync_job(user_id: str, status: str, error_message=None) -> dict:
+    try:
+        res = supabase.table("sync_jobs").upsert({
+            "user_id": user_id,
+            "status": status,
+            "error_message": error_message,
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }, on_conflict="user_id").execute()
+        return _ok((res.data or [None])[0])
+    except Exception as e:
+        return _err(e)
+
+
+def get_sync_job(user_id: str) -> dict:
+    """Return the user's job row (or None). A job stuck in 'processing' longer
+    than SYNC_JOB_STALE_MINUTES (e.g. the worker died in a Render restart) is
+    flipped to 'failed' here so the frontend gets a clean retry state."""
+    try:
+        res = supabase.table("sync_jobs").select("*").eq("user_id", user_id).limit(1).execute()
+        job = (res.data or [None])[0]
+        if job and job.get("status") == "processing":
+            updated = _parse_ts(job.get("updated_at"))
+            if updated is not None:
+                age = datetime.now(updated.tzinfo) - updated
+                if age > timedelta(minutes=SYNC_JOB_STALE_MINUTES):
+                    msg = f"Sync timed out after {SYNC_JOB_STALE_MINUTES} minutes. Please retry."
+                    set_sync_job(user_id, "failed", msg)
+                    job = {**job, "status": "failed", "error_message": msg}
+        return _ok(job)
+    except Exception as e:
+        return _err(e)
+
+
+def try_start_sync_job(user_id: str) -> dict:
+    """data=True if a new job was started, False if one is already running."""
+    current = get_sync_job(user_id)
+    if current["status"] == "error":
+        return current
+    job = current["data"]
+    if job and job.get("status") == "processing":
+        return _ok(False)
+    started = set_sync_job(user_id, "processing")
+    if started["status"] == "error":
+        return started
+    return _ok(True)

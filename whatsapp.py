@@ -215,14 +215,13 @@ async def verify_webhook(
 # ============================================
 # 3. Incoming message receiver (POST)
 # ============================================
+# In-memory copy is only a fallback for when Supabase is unreachable; the
+# whatsapp_processed_messages table is the source of truth across restarts.
 _seen_message_ids = {}
 _SEEN_TTL_SECONDS = 60 * 60
 
 
-def _already_seen(msg_id: str) -> bool:
-    """Drop Meta's retry deliveries of a message we've already queued."""
-    if not msg_id:
-        return False
+def _already_seen_in_memory(msg_id: str) -> bool:
     now = time.time()
     for mid, ts in list(_seen_message_ids.items()):
         if now - ts > _SEEN_TTL_SECONDS:
@@ -233,7 +232,19 @@ def _already_seen(msg_id: str) -> bool:
     return False
 
 
-def _run_in_worker(coro_fn, *args):
+async def _already_seen(msg_id: str, phone: str) -> bool:
+    """Drop Meta's retry deliveries of a message we've already queued."""
+    if not msg_id:
+        return False
+    import database
+    claim = await asyncio.to_thread(database.claim_whatsapp_message, msg_id, phone)
+    if claim["status"] == "success":
+        return claim["data"] is False
+    print(f"[WhatsApp] Dedupe table unavailable, using memory: {claim['error']}")
+    return _already_seen_in_memory(msg_id)
+
+
+def _run_in_worker(msg_id, coro_fn, *args):
     """Sync wrapper: FastAPI runs sync background tasks in its threadpool, and
     asyncio.run gives the coroutine its own loop there. Async background tasks
     would otherwise run on the main loop, where blocking Gemini/ChromaDB calls
@@ -242,6 +253,9 @@ def _run_in_worker(coro_fn, *args):
         asyncio.run(coro_fn(*args))
     except Exception as e:
         print(f"[WhatsApp] Background task {coro_fn.__name__} crashed: {e}")
+        if msg_id:
+            import database
+            database.release_whatsapp_message(msg_id)
 
 
 @router.post("/api/whatsapp/webhook")
@@ -263,12 +277,12 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
             from_phone = message["from"]
             msg_id = message.get("id", "")
 
-            if _already_seen(msg_id):
+            if await _already_seen(msg_id, from_phone):
                 print(f"[WhatsApp] Duplicate delivery {msg_id} ignored.")
             elif msg_type == "text":
                 body = message["text"]["body"]
                 print(f"[WhatsApp] Incoming from {from_phone} ({msg_id}): {body}")
-                background_tasks.add_task(_run_in_worker, _process_and_reply, from_phone, body)
+                background_tasks.add_task(_run_in_worker, msg_id, _process_and_reply, from_phone, body)
             elif msg_type in ("image", "document"):
                 # Receipt uploads arrive as image (photo) or document (PDF/scan).
                 media_obj = message.get(msg_type, {}) or {}
@@ -277,7 +291,7 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
                 print(f"[WhatsApp] Incoming {msg_type} from {from_phone} ({msg_id}), media={media_id}")
                 if media_id:
                     background_tasks.add_task(
-                        _run_in_worker, _process_receipt_and_reply, from_phone, media_id, caption
+                        _run_in_worker, msg_id, _process_receipt_and_reply, from_phone, media_id, caption
                     )
             else:
                 print(f"[WhatsApp] Ignoring unsupported message type '{msg_type}' from {from_phone}.")

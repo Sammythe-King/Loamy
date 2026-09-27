@@ -2885,9 +2885,15 @@ async def add_to_review_queue(data: dict):
 async def get_review_queue(user_id: str):
     """Return all pending review items for a user (newest first).
     Also scans synced bank emails first so the queue stays fresh on its own."""
+    if not _is_real_user_id(user_id):
+        return {"status": "error", "data": None, "error": "invalid_user_id"}
     try:
-        _scan_bank_emails_for_review(user_id)
-        results = review_queue_collection.get(where={"user_id": user_id})
+        # Blocking ChromaDB work; keep it off the event loop so one slow scan
+        # can't stall /get-chats and every other request on the instance.
+        def _load():
+            _scan_bank_emails_for_review(user_id)
+            return review_queue_collection.get(where={"user_id": user_id})
+        results = await asyncio.to_thread(_load)
         items = []
         resolved = []
         for i in range(len(results["ids"])):
@@ -4521,16 +4527,52 @@ def _background_fetch_and_store(access_token: str, user_id: str, full_resync: bo
     finally:
         result["finished_at"] = datetime.now().isoformat()
         _bg_sync_results[user_id] = result
+        _finish_sync_job(user_id, result["ok"], result.get("reason"))
         with _active_bg_syncs_lock:
             _active_bg_syncs.discard(user_id)
 
 
+def _finish_sync_job(user_id: str, ok: bool, reason=None):
+    saved = database.set_sync_job(
+        user_id, "completed" if ok else "failed", None if ok else str(reason or "sync_failed")
+    )
+    if saved["status"] == "error":
+        print(f"[BG Gmail] could not persist sync job for {user_id}: {saved['error']}")
+
+
 def _background_store_only(payload: dict):
+    user_id = payload.get("user_id")
+    ok, reason = False, None
     try:
         with _gmail_blob_lock:
             asyncio.run(_sync_gmail_data_core(payload))
+        ok = True
     except Exception as e:
-        print(f"[BG Gmail] store failed for {payload.get('user_id')}: {e}")
+        print(f"[BG Gmail] store failed for {user_id}: {e}")
+        reason = str(e)
+    finally:
+        _bg_sync_results[user_id] = {
+            "ok": ok, "reason": reason, "finished_at": datetime.now().isoformat()
+        }
+        _finish_sync_job(user_id, ok, reason)
+
+
+async def _start_sync_job(user_id: str) -> bool:
+    """True if this request owns a new job; False if one is already running.
+    Supabase is the source of truth so a Render restart can't orphan the
+    in-flight flag; the in-memory set is only a fallback if Supabase is down."""
+    started = await asyncio.to_thread(database.try_start_sync_job, user_id)
+    if started["status"] == "success":
+        if started["data"]:
+            with _active_bg_syncs_lock:
+                _active_bg_syncs.add(user_id)
+        return bool(started["data"])
+    print(f"[BG Gmail] sync_jobs unavailable, using memory: {started['error']}")
+    with _active_bg_syncs_lock:
+        if user_id in _active_bg_syncs:
+            return False
+        _active_bg_syncs.add(user_id)
+    return True
 
 
 @app.post("/gmail/fetch-emails")
@@ -4565,10 +4607,8 @@ async def fetch_gmail_emails(data: dict, background_tasks: BackgroundTasks):
     except Exception as e:
         return {"status": "error", "error": f"gmail_unreachable: {e}"}
 
-    with _active_bg_syncs_lock:
-        if user_id in _active_bg_syncs:
-            return {"status": "processing", "already_running": True}
-        _active_bg_syncs.add(user_id)
+    if not await _start_sync_job(user_id):
+        return {"status": "processing", "already_running": True}
 
     background_tasks.add_task(_background_fetch_and_store, access_token, user_id, full_resync)
     return {"status": "processing"}
@@ -4579,10 +4619,23 @@ async def gmail_sync_status(user_id: str):
     """Poll target for the frontend after /gmail/fetch-emails returns 'processing'."""
     if not _is_real_user_id(user_id):
         return {"status": "error", "error": "invalid_user_id"}
-    with _active_bg_syncs_lock:
-        in_flight = user_id in _active_bg_syncs
-    if in_flight:
-        return {"status": "processing"}
+
+    job_res = await asyncio.to_thread(database.get_sync_job, user_id)
+    if job_res["status"] == "success":
+        job = job_res["data"] or {}
+        if job.get("status") == "processing":
+            return {"status": "processing"}
+        last = {
+            "ok": job.get("status") != "failed",
+            "reason": job.get("error_message"),
+            "finished_at": job.get("updated_at"),
+        }
+    else:
+        print(f"[BG Gmail] sync_jobs unavailable, using memory: {job_res['error']}")
+        with _active_bg_syncs_lock:
+            if user_id in _active_bg_syncs:
+                return {"status": "processing"}
+        last = _bg_sync_results.get(user_id) or {}
 
     def _read_blob():
         stored = gmail_data_collection.get(ids=[f"gmail_{user_id}"])
@@ -4600,7 +4653,6 @@ async def gmail_sync_status(user_id: str):
         key=lambda e: e.get("internal_date_ms") or 0,
         reverse=True,
     )[:500]
-    last = _bg_sync_results.get(user_id) or {}
     return {
         "status": "success" if last.get("ok", True) else "error",
         "error": last.get("reason"),
@@ -5794,6 +5846,9 @@ async def sync_gmail_data(data: dict, background_tasks: BackgroundTasks):
         return {"status": "error", "error": "invalid_user_id"}
     if not isinstance(emails, list) or not isinstance(stats, dict):
         return {"status": "error", "error": "invalid_payload"}
+    saved = await asyncio.to_thread(database.set_sync_job, user_id, "processing")
+    if saved["status"] == "error":
+        print(f"[BG Gmail] could not persist sync job for {user_id}: {saved['error']}")
     background_tasks.add_task(
         _background_store_only, {"user_id": user_id, "emails": emails, "stats": stats}
     )
