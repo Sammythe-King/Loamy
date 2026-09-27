@@ -43,24 +43,7 @@ Rules:
   suggest or discuss savings goals, even if the user's data contains goal information.
 """
 
-# Appended to the persona only for the WhatsApp channel. WhatsApp renders a
-# stray asterisk literally instead of bolding it, so headers/emphasis have to
-# come from uppercase text and a fixed emoji/bullet set instead of markdown.
-_WHATSAPP_FORMAT_RULES = """
-WHATSAPP MESSAGE FORMATTING (this reply is sent as a plain WhatsApp text message):
-- NEVER use the asterisk character (*) anywhere in your reply - no markdown bold (*text*), no
-  asterisk bullet points, no asterisk emphasis of any kind.
-- Use UPPERCASE for section headers and key labels instead of bold syntax, e.g. MERCHANT:,
-  TOTAL OUTFLOW:, FINANCIAL SNAPSHOT, CATEGORY:, BALANCE:.
-- For any list of transactions or items, use the bullet "▪️" - never *, -, or numbers.
-- Only use these subtle, professional emojis, and only as section header markers: 💳 📊 🏛️ ▪️.
-  Never use bright or casual emojis (no 🍕 🛒 🥳 😀, etc).
-- Keep details grouped tightly with no blank line between a header and the lines beneath it.
-  Leave exactly ONE blank line between major sections.
-- End the response with exactly one short footer line, italicized with single underscores,
-  e.g. _Loamy - your financial companion_
-- Do not use any other markdown (#, backticks, double underscores, tildes, etc).
-"""
+from whatsapp import WHATSAPP_FORMAT_RULES as _WHATSAPP_FORMAT_RULES
 
 
 def _format_context(ctx: dict) -> str:

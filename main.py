@@ -18,7 +18,7 @@ load_dotenv()
 # Import chat router
 from chat import router as chat_router
 # Import WhatsApp transport module (Meta Cloud API webhooks + outbound sends)
-from whatsapp import router as whatsapp_router, set_ai_handler, set_receipt_handler
+from whatsapp import router as whatsapp_router, set_ai_handler, set_receipt_handler, WHATSAPP_FORMAT_RULES
 
 app = FastAPI()
 
@@ -1456,23 +1456,7 @@ async def chat_with_history(query: dict):
         """
 
         if channel == "whatsapp":
-            advisor_prompt += """
-
-        ### WHATSAPP MESSAGE FORMATTING (THIS REPLY IS SENT AS A PLAIN WHATSAPP TEXT MESSAGE):
-        - NEVER use the asterisk character (*) anywhere in your reply - no markdown bold (*text*), no
-          asterisk bullet points, no asterisk emphasis of any kind. A stray asterisk renders literally on
-          WhatsApp and looks broken.
-        - Use UPPERCASE for section headers and key labels instead of bold syntax, e.g. MERCHANT:,
-          TOTAL OUTFLOW:, FINANCIAL SNAPSHOT, CATEGORY:, BALANCE:.
-        - For any list of transactions or items, use the bullet "▪️" - never *, -, or numbers.
-        - Only use these subtle, professional emojis, and only as section header markers: 💳 📊 🏛️ ▪️.
-          Never use bright or casual emojis (no 🍕 🛒 🥳 😀, etc).
-        - Keep details grouped tightly with no blank line between a header and the lines beneath it.
-          Leave exactly ONE blank line between major sections.
-        - End the response with exactly one short footer line, italicized with single underscores,
-          e.g. _Loamy - your financial companion_
-        - Do not use any other markdown (#, backticks, double underscores, tildes, etc).
-        """
+            advisor_prompt += "\n" + WHATSAPP_FORMAT_RULES
 
         response = model.generate_content(advisor_prompt)
         reply_text = response.text
@@ -1545,6 +1529,7 @@ async def chat_with_history(query: dict):
 # identity resolution and hands the AI a real, Supabase-backed user_id. Kept
 # small and single-purpose (Logic/UI Separation + Atomic Modularity rules).
 import database  # data-access layer; the only module that talks to Supabase
+import categorizer
 import chat_service  # builds the combined Gmail + ledger snapshot for all channels
 
 
@@ -1609,31 +1594,40 @@ async def _whatsapp_receipt_handler(file_data: bytes, mime_type: str, from_phone
         return "I couldn't read that receipt clearly. Please try a sharper, well-lit photo."
 
     analysis = result.get("analysis", {}) or {}
-    vendor = (analysis.get("vendor") or "the vendor").upper()
-    category = (analysis.get("category") or "Uncategorized").upper()
+    vendor = analysis.get("vendor") or "the vendor"
     cur = result.get("currency_info", {}) or {}
     ngn = cur.get("displayed_amount")
 
+    category = categorizer.coerce_category(analysis.get("category"))
+    if category == categorizer.UNCATEGORIZED:
+        guess = await asyncio.to_thread(
+            categorizer.categorize_one, ngn, vendor, analysis.get("description") or vendor
+        )
+        category = guess["category"]
+
     if ngn is not None:
         try:
-            amount_str = f"\u20a6{float(ngn):,.2f}"
+            amount_str = f"\u20a6{float(ngn):,.0f}"
         except (TypeError, ValueError):
             amount_str = "the amount"
         if cur.get("is_estimate"):
-            amount_str += " (estimated)"
+            amount_str += " _(estimated)_"
     else:
         amount_str = "the amount"
 
-    # Matches the WhatsApp house style: uppercase labels, no asterisks, plain
-    # square bullet, italic footer (see the WHATSAPP MESSAGE FORMATTING rules
-    # in chat_with_history for the same convention on chat replies).
+    footer = (
+        "_Tap Review Queue in Loamy to pick a category_"
+        if category == categorizer.UNCATEGORIZED
+        else "_Synced to your Loamy dashboard_"
+    )
     return (
-        f"💳 RECEIPT LOGGED\n"
-        f"MERCHANT: {vendor}\n"
-        f"AMOUNT: {amount_str}\n"
-        f"CATEGORY: {category}\n"
+        f"> *Receipt logged*\n"
+        f"> {amount_str}\n"
         f"\n"
-        f"_Synced to your Loamy dashboard_"
+        f"• *Merchant*: {vendor}\n"
+        f"• *Category*: {category}\n"
+        f"\n"
+        f"{footer}"
     )
 
 
@@ -2191,7 +2185,7 @@ async def get_dashboard_data(user_id: str = "default"):
                                 'date': date,
                                 'bank': bank_name,
                                 'type': this_type,
-                                'suggested_categories': ['Sales', 'Groceries', 'Food', 'Transport', 'Bills', 'Salaries', 'Stock', 'Shopping', 'Other']
+                                'suggested_categories': [c for c in categorizer.STANDARD_CATEGORIES if c != categorizer.UNCATEGORIZED]
                             })
 
                             # Layer 2: auto-create a chat nudge in the Review Queue for
@@ -2252,11 +2246,10 @@ async def get_dashboard_data(user_id: str = "default"):
             amount = tx['amount']
             tx_type = tx['type']
             category = normalize_category(tx.get('category', 'Other') or 'Other')
-            # "Banking" is only the raw-alert placeholder, not a real spend
-            # category; without this every un-reviewed debit piles into one slice.
+            # Gemini categorizes at ingest time; anything still on a placeholder
+            # is unresolved and belongs in "Uncategorized" (Review Queue).
             if category.strip().lower() in ('banking', 'other', 'uncategorized', ''):
-                guessed = categorize_transaction(tx.get('description', ''))
-                category = 'Uncategorized' if guessed == 'Other' else guessed
+                category = categorizer.UNCATEGORIZED
                 tx['category'] = category
             
             if tx_type == 'credit':
@@ -5902,6 +5895,11 @@ async def _sync_gmail_data_core(data: dict):
 
         emails = list(merged_by_id.values())
 
+        try:
+            await asyncio.to_thread(_ai_categorize_bank_alerts, emails)
+        except Exception as e:
+            print(f"[categorizer] skipped this sync: {e}")
+
         # Replace the single blob with the merged set.
         try:
             gmail_data_collection.delete(ids=[doc_id])
@@ -6087,7 +6085,7 @@ async def get_bank_transactions(user_id: str):
                     "balance_after": email.get("balance"),
                     "narration": email.get("narration"),
                     "bank": email.get("bank_name"),
-                    "category": categorize_transaction(email.get("narration", ""))
+                    "category": normalize_category(email.get("category"))
                 }
                 bank_transactions.append(tx)
                 
@@ -6123,36 +6121,54 @@ def normalize_category(category):
     Keeps the dashboard, breakdown and review queue consistent.
     """
     if not category:
-        return "Other"
+        return categorizer.UNCATEGORIZED
     aliases = {
         "home improvement": "Personal Expenses",
         "home_improvement": "Personal Expenses",
         "personal": "Personal Expenses",
     }
-    return aliases.get(str(category).strip().lower(), category)
+    key = str(category).strip().lower()
+    if key in aliases:
+        return aliases[key]
+    # Legacy/placeholder labels snap onto the standard list; user-chosen
+    # custom categories (e.g. "Personal Expenses") are kept as-is.
+    coerced = categorizer.coerce_category(category)
+    if coerced != categorizer.UNCATEGORIZED or key in ("other", "banking", "uncategorized"):
+        return coerced
+    return category
 
 
-def categorize_transaction(narration):
-    """Categorize a bank transaction based on its narration"""
-    if not narration:
-        return "Other"
+_AI_CATEGORIZE_PER_SYNC = 200
 
-    narration_lower = narration.lower()
-    
-    # Business categories
-    if any(word in narration_lower for word in ["transfer to", "nip transfer", "payment"]):
-        return "Transfer"
-    if any(word in narration_lower for word in ["pos", "purchase", "buy"]):
-        return "Purchase"
-    if any(word in narration_lower for word in ["airtime", "mtn", "glo", "airtel", "9mobile"]):
-        return "Airtime"
-    if any(word in narration_lower for word in ["dstv", "gotv", "startimes", "electricity", "nepa"]):
-        return "Bills"
-    if any(word in narration_lower for word in ["salary", "wage", "income"]):
-        return "Income"
-    if any(word in narration_lower for word in ["atm", "withdrawal", "cash"]):
-        return "Cash Withdrawal"
-    if any(word in narration_lower for word in ["stamp duty", "charge", "fee", "vat"]):
-        return "Bank Charges"
-    
-    return "Other"
+
+def _ai_categorize_bank_alerts(emails: list) -> int:
+    """Assign a Gemini category to every bank alert still on the placeholder.
+
+    Runs inside the background sync pipeline. Capped per sync so a first-time
+    backfill of thousands of alerts spreads across syncs instead of stalling
+    one. Low-confidence / failed results stay "Uncategorized" and are marked
+    as checked so they surface in the Review Queue instead of being retried."""
+    targets = [
+        e for e in emails
+        if e.get("is_bank_alert")
+        and not e.get("category_source")
+        and str(e.get("category") or "").strip().lower() in ("", "banking", "other", "uncategorized")
+    ][:_AI_CATEGORIZE_PER_SYNC]
+    if not targets:
+        return 0
+
+    items = [{
+        "amount": e.get("amount"),
+        "type": e.get("transaction_type") or "debit",
+        "vendor": _extract_vendor_name(e.get("narration") or "", e.get("transaction_type") or "debit"),
+        "description": e.get("narration") or e.get("subject") or "",
+    } for e in targets]
+
+    results = categorizer.categorize_batch(items)
+    for email, res in zip(targets, results):
+        email["category"] = res["category"]
+        email["category_confidence"] = res["confidence"]
+        email["category_source"] = "gemini"
+    resolved = sum(1 for r in results if r["category"] != categorizer.UNCATEGORIZED)
+    print(f"[categorizer] {resolved}/{len(targets)} bank alerts categorized by Gemini")
+    return len(targets)

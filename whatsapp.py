@@ -65,26 +65,70 @@ def set_receipt_handler(handler):
 # ============================================
 # 0. Outbound text sanitizer (WhatsApp house style)
 # ============================================
-def sanitize_whatsapp_text(text: str) -> str:
-    """Safety net that enforces the WhatsApp "no asterisks" house style.
+WHATSAPP_FORMAT_RULES = """
+WHATSAPP MESSAGE FORMATTING (this reply is sent as a WhatsApp text message - use WhatsApp's
+native markdown, NOT standard markdown):
+- Bold uses SINGLE asterisks: *Groceries*. Never use double asterisks (**x**), # headers,
+  backticks or tables.
+- Italics use single underscores, for dates and subtle notes: _Sep 12_.
+- Open with a short summary card as blockquote lines, e.g.
+  > *This month*
+  > Spent ₦154,376 · Balance ₦4,262
+- Group spending by category. Each category gets a bold header line with its total:
+  🛒 *Groceries* — ₦89,384
+- Every merchant purchase goes on ITS OWN line under its category, in exactly this shape:
+  • *Merchant Name*: ₦XX,XXX (_Sep 12_)
+  Combine repeat purchases at the same merchant into one line with the summed amount.
+- NEVER write sentences like "This includes transactions like ..." - itemize instead.
+- Write merchant and category names in Title Case (Domino's Pizza, Maxcare Mart), never ALL CAPS.
+- Round naira amounts to whole numbers with thousands separators: ₦64,930.
+- Put ONE blank line between categories so the message breathes on a phone screen.
+- At most one emoji per category header; no emojis inside bullet lines.
+- End with one short italic footer line, e.g. _Loamy - your financial companion_
+"""
 
-    The AI persona (see chat_with_history's WHATSAPP MESSAGE FORMATTING rules)
-    is instructed never to emit asterisks, but LLM output isn't 100% guaranteed
-    to follow that every time. This runs on EVERY outbound message - AI replies,
-    receipt confirmations, and error strings alike - so a stray *bold* or "* "
-    bullet never reaches the user as a literal, broken-looking asterisk.
-    """
+_KEEP_UPPER = {
+    "ATM", "POS", "NIP", "FIP", "VAT", "DSTV", "GOTV", "MTN", "GTB", "UBA", "NGN", "USD",
+    "GBP", "EUR", "OTP", "BVN", "NIN", "KFC", "SMS", "USSD", "AI", "ID", "TV", "UK", "US",
+    "LTD", "PLC", "NG", "II", "III",
+}
+_CAPS_RUN = re.compile(r"\b[A-Z][A-Z0-9'’&\-]*[A-Z0-9](?:[ \t]+[A-Z][A-Z0-9'’&\-]*[A-Z0-9]?)*\b")
+
+
+def _title_word(word: str) -> str:
+    if word.upper() in _KEEP_UPPER or any(ch.isdigit() for ch in word):
+        return word
+    return "-".join(part[:1].upper() + part[1:].lower() for part in word.split("-"))
+
+
+def _title_case_caps(match: re.Match) -> str:
+    run = match.group(0)
+    words = run.split()
+    letters = re.sub(r"[^A-Z]", "", run)
+    # A lone short all-caps token (NIP, POS, OK) is an acronym, not shouting.
+    if len(words) == 1 and len(letters) <= 3:
+        return run
+    return re.sub(r"\S+", lambda m: _title_word(m.group(0)), run)
+
+
+def sanitize_whatsapp_text(text: str) -> str:
+    """Safety net that normalizes any outbound text to WhatsApp-native markdown.
+
+    Runs on EVERY outbound message (AI replies, receipt confirmations, errors),
+    because LLM output doesn't always follow WHATSAPP_FORMAT_RULES exactly."""
     if not text:
         return text
-    # Markdown bold, e.g. **Total** or *Total* -> Total (unwrap, don't strip content).
-    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
-    text = re.sub(r"\*(.+?)\*", r"\1", text)
-    # A leftover "* Item" bullet (e.g. the ALLOCATE/CREATE_INVOICE prompt syntax
-    # shared with the web chat) becomes the house square bullet instead.
-    text = re.sub(r"(?m)^(\s*)\*\s+", r"\1▪️ ", text)
-    # Anything else stray (e.g. an unmatched "*") is dropped outright.
-    text = text.replace("*", "")
-    return text
+    # Standard-markdown bold -> WhatsApp bold.
+    text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
+    # "# Heading" -> bold line.
+    text = re.sub(r"(?m)^\s*#{1,6}\s+(.+?)\s*$", r"*\1*", text)
+    # "* Item" / "- Item" / "▪️ Item" bullets -> the house bullet.
+    text = re.sub(r"(?m)^(\s*)(?:\*|-|▪️)\s+", r"\1• ", text)
+    # SHOUTED merchant/category names -> Title Case.
+    text = _CAPS_RUN.sub(_title_case_caps, text)
+    # Max one blank line anywhere.
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 # ============================================
