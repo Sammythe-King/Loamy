@@ -736,24 +736,38 @@ def process_receipt_image(file_data, content_type, user_id="default"):
         # --- SAVE TO SUPABASE (scoped to this user) ---
         # Store with both original and converted amounts. Human-readable summary
         # goes in `document`; the deterministic numbers go in typed columns.
-        doc_text = f"Spent ₦{converted_amount} at {transaction_data['vendor']} on {transaction_data['date']}. Items: {transaction_data['items']}"
+        vendor = transaction_data.get('vendor') or 'Unknown'
+        transaction_data['vendor'] = vendor
+        items = transaction_data.get('items') or ''
+        doc_text = f"Spent ₦{converted_amount} at {vendor} on {transaction_data['date']}. Items: {items}"
         if is_foreign_currency:
             doc_text += f" (Original: {original_currency}{numeric_total})"
+
+        # Snap the vision model's category onto the standard list before saving,
+        # so the dashboard breakdown and WhatsApp card agree with what's stored.
+        category = categorizer.coerce_category(transaction_data.get('category'))
+        if category == categorizer.UNCATEGORIZED:
+            category = categorizer.categorize_one(
+                converted_amount, vendor, transaction_data.get('description') or str(items) or vendor
+            )["category"]
+        transaction_data['category'] = category
 
         tx_id = f"trans_{os.urandom(4).hex()}"
         save_res = database.add_transaction(
             user_id=user_id,
             tx_id=tx_id,
             amount=converted_amount,          # stored in NGN
-            vendor=transaction_data['vendor'],
+            vendor=vendor,
+            description=vendor,
             original_amount=numeric_total,
             original_currency=original_currency,
             currency="NGN",
             date=transaction_data['date'],
-            category=transaction_data['category'],
+            category=category,
             transaction_type="expense",
             is_estimate=is_foreign_currency,  # True until a bank alert trues it up
             document=doc_text,
+            source="receipt",
         )
         if save_res["status"] != "success":
             print(f"[upload-artifact] Supabase save failed: {save_res['error']}")
@@ -872,7 +886,7 @@ async def chat_with_history(query: dict):
         ledger_summary = ledger_data.get("summary", {}) or {}
         ledger_only_entries = [
             t for t in (ledger_data.get("recent_transactions") or [])
-            if t.get("source") == "ledger"
+            if t.get("source") in ("receipt", "manual_cash")
         ]
 
         spending_entries = []
@@ -1533,6 +1547,172 @@ import categorizer
 import chat_service  # builds the combined Gmail + ledger snapshot for all channels
 
 
+CURRENCY_SYMBOLS = {"NGN": "\u20a6", "USD": "$", "EUR": "\u20ac", "GBP": "\u00a3", "INR": "\u20b9"}
+
+
+def _resolve_tx_date(raw) -> str:
+    today = datetime.now().date()
+    text = str(raw or "").strip().lower()
+    if not text or text == "today":
+        return today.isoformat()
+    if text == "yesterday":
+        return (today - timedelta(days=1)).isoformat()
+    parsed = database._to_date_obj(raw)
+    return (parsed or today).isoformat()
+
+
+def add_manual_transaction(user_id: str, amount, currency: str = "NGN", category: str = "",
+                           description: str = "", date=None, source: str = "manual_cash") -> dict:
+    """Write a user-reported expense into the unified transactions ledger.
+
+    `amount` is in `currency`; the stored `amount` is always NGN, with the
+    original figure kept alongside for foreign spends."""
+    try:
+        original_amount = float(re.sub(r"[^\d.]", "", str(amount)) or 0)
+    except ValueError:
+        original_amount = 0.0
+    if original_amount <= 0:
+        return {"status": "error", "data": None, "error": "Amount must be greater than zero."}
+
+    currency = (currency or "NGN").strip().upper()[:3] or "NGN"
+    conversion = convert_to_local_currency(original_amount, currency, "NGN")
+    amount_ngn = conversion["converted_amount"]
+    description = (description or "").strip() or "Cash expense"
+
+    resolved_category = categorizer.coerce_category(category)
+    if resolved_category == categorizer.UNCATEGORIZED:
+        resolved_category = categorizer.categorize_one(amount_ngn, description, description)["category"]
+
+    tx_date = _resolve_tx_date(date)
+    tx_id = f"{'cash' if source == 'manual_cash' else 'trans'}_{os.urandom(6).hex()}"
+    doc_text = f"Spent \u20a6{amount_ngn:,.2f} on {description} ({resolved_category}) on {tx_date}"
+    if currency != "NGN":
+        doc_text += f" (Original: {currency} {original_amount:,.2f})"
+
+    save_res = database.add_transaction(
+        user_id=user_id,
+        tx_id=tx_id,
+        amount=amount_ngn,
+        vendor=description,
+        description=description,
+        original_amount=original_amount,
+        original_currency=currency,
+        currency="NGN",
+        date=tx_date,
+        category=resolved_category,
+        transaction_type="expense",
+        is_estimate=conversion["is_estimate"],
+        document=doc_text,
+        source=source,
+    )
+    if save_res["status"] != "success":
+        return save_res
+    return {"status": "success", "error": None, "data": {
+        "id": tx_id, "amount_ngn": amount_ngn, "original_amount": original_amount,
+        "original_currency": currency, "category": resolved_category,
+        "description": description, "date": tx_date, "source": source,
+    }}
+
+
+def format_logged_amount(amount_ngn, original_amount=None, original_currency="NGN") -> str:
+    text = f"\u20a6{float(amount_ngn or 0):,.0f}"
+    if original_currency and original_currency != "NGN" and original_amount:
+        symbol = CURRENCY_SYMBOLS.get(original_currency)
+        original = f"{symbol}{float(original_amount):,.0f}" if symbol else f"{float(original_amount):,.0f} {original_currency}"
+        text += f" ({original})"
+    return text
+
+
+MANUAL_TRANSACTION_TOOL = {
+    "function_declarations": [{
+        "name": "add_manual_transaction",
+        "description": (
+            "Log an expense the user tells you they made (cash, card or transfer) "
+            "that should be added to their spending ledger."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "amount": {"type": "NUMBER", "description": "Amount spent, in `currency`."},
+                "currency": {"type": "STRING", "description": "ISO 4217 code, e.g. NGN, MUR, USD. Default NGN."},
+                "category": {"type": "STRING", "enum": categorizer.STANDARD_CATEGORIES},
+                "description": {"type": "STRING", "description": "Merchant or what it was for, in Title Case."},
+                "date": {"type": "STRING", "description": "Date of the spend as YYYY-MM-DD."},
+            },
+            "required": ["amount", "currency", "category", "description", "date"],
+        },
+    }]
+}
+
+
+def extract_manual_transaction_call(text: str):
+    """Ask Gemini whether the message logs a spend; return its tool-call args or None."""
+    today = datetime.now()
+    prompt = (
+        f"Today is {today.strftime('%A, %Y-%m-%d')}. You route WhatsApp messages for Loamy, "
+        "a personal finance app. If the user is REPORTING money they already spent "
+        "(e.g. 'I spent 1000 MUR on groceries yesterday', 'paid 3k for a taxi'), you MUST call "
+        "add_manual_transaction, resolving relative dates to YYYY-MM-DD and shorthand like 3k to 3000. "
+        "Questions about spending, goals, invoices or anything else must NOT call the tool.\n\n"
+        f"User message: {text}"
+    )
+    response = model.generate_content(
+        prompt,
+        tools=[MANUAL_TRANSACTION_TOOL],
+        tool_config={"function_calling_config": {"mode": "AUTO"}},
+    )
+    for candidate in response.candidates or []:
+        for part in candidate.content.parts or []:
+            call = getattr(part, "function_call", None)
+            if call and call.name == "add_manual_transaction":
+                return {key: value for key, value in call.args.items()}
+    return None
+
+
+async def _try_log_manual_transaction(text: str, user_id: str):
+    """Returns a confirmation card if the message was a spend report, else None."""
+    if not re.search(r"\d", text or ""):
+        return None
+    try:
+        args = await asyncio.to_thread(extract_manual_transaction_call, text)
+    except Exception as e:
+        print(f"[WhatsApp bridge] manual-entry function call failed: {e}")
+        return None
+    if not args:
+        return None
+
+    result = await asyncio.to_thread(
+        add_manual_transaction,
+        user_id,
+        args.get("amount"),
+        args.get("currency") or "NGN",
+        args.get("category") or "",
+        args.get("description") or "",
+        args.get("date"),
+        "manual_cash",
+    )
+    if result["status"] != "success":
+        print(f"[WhatsApp bridge] manual entry save failed: {result['error']}")
+        return "I couldn't log that expense just now. Please try again in a moment."
+
+    tx = result["data"]
+    date_label = datetime.fromisoformat(tx["date"]).strftime("%b %d")
+    footer = (
+        "_Tap Review Queue in Loamy to pick a category_"
+        if tx["category"] == categorizer.UNCATEGORIZED
+        else "_Synced to your Loamy dashboard_"
+    )
+    return (
+        "\u270d\ufe0f *Expense Logged!*\n"
+        f"• *Merchant*: {tx['description']}\n"
+        f"• *Amount*: {format_logged_amount(tx['amount_ngn'], tx['original_amount'], tx['original_currency'])}\n"
+        f"• *Category*: {tx['category']}\n"
+        f"• *Date*: _{date_label}_\n"
+        "\n"
+        f"{footer}"
+    )
+
+
 async def _whatsapp_ai_handler(text: str, from_phone: str) -> str:
     # A. Resolve the WhatsApp phone to a Loamy account (Phase 1: look up an
     #    existing user by their saved phone_number; full self-service linking
@@ -1550,11 +1730,16 @@ async def _whatsapp_ai_handler(text: str, from_phone: str) -> str:
                 "\"Connect WhatsApp\" to link this number - then message me again.")
     user_id = user_row["user_id"]
 
+    # B. "I spent 1000 MUR on groceries" -> Gemini function call -> ledger row.
+    logged = await _try_log_manual_transaction(text, user_id)
+    if logged:
+        return logged
+
     # C. Give the advisor the SAME snapshot the web chat and dashboard use, from
     #    the shared compute_bank_snapshot() so every channel reports identical
     #    numbers. (Previously WhatsApp read an empty Supabase table -> ₦0.00.)
     snap = await asyncio.to_thread(compute_bank_snapshot, user_id)
-    if snap.get("alert_count", 0) > 0:
+    if snap.get("alert_count", 0) > 0 or snap.get("ledger_count", 0) > 0:
         text = (
             "=== VERIFIED FINANCIAL SNAPSHOT (use these exact numbers) ===\n"
             f"{format_snapshot_for_ai(snap)}\n"
@@ -1599,21 +1784,13 @@ async def _whatsapp_receipt_handler(file_data: bytes, mime_type: str, from_phone
     ngn = cur.get("displayed_amount")
 
     category = categorizer.coerce_category(analysis.get("category"))
-    if category == categorizer.UNCATEGORIZED:
-        guess = await asyncio.to_thread(
-            categorizer.categorize_one, ngn, vendor, analysis.get("description") or vendor
-        )
-        category = guess["category"]
 
-    if ngn is not None:
-        try:
-            amount_str = f"\u20a6{float(ngn):,.0f}"
-        except (TypeError, ValueError):
-            amount_str = "the amount"
-        if cur.get("is_estimate"):
-            amount_str += " _(estimated)_"
-    else:
+    try:
+        amount_str = format_logged_amount(ngn, cur.get("original_amount"), cur.get("original_currency"))
+    except (TypeError, ValueError):
         amount_str = "the amount"
+    if cur.get("is_estimate"):
+        amount_str += " _(est.)_"
 
     footer = (
         "_Tap Review Queue in Loamy to pick a category_"
@@ -1621,12 +1798,11 @@ async def _whatsapp_receipt_handler(file_data: bytes, mime_type: str, from_phone
         else "_Synced to your Loamy dashboard_"
     )
     return (
-        f"> *Receipt logged*\n"
-        f"> {amount_str}\n"
-        f"\n"
+        "\U0001f9fe *Receipt Logged!*\n"
         f"• *Merchant*: {vendor}\n"
+        f"• *Amount*: {amount_str}\n"
         f"• *Category*: {category}\n"
-        f"\n"
+        "\n"
         f"{footer}"
     )
 
@@ -2005,6 +2181,23 @@ def compute_bank_snapshot(user_id: str) -> dict:
                     cat = normalize_category(category or 'Other') or 'Other'
                     snap['spending_by_category'][cat] = snap['spending_by_category'].get(cat, 0) + amount
 
+        # Manual cash entries and scanned receipts count toward spending too.
+        # They don't move the bank balance, which stays the bank's own figure.
+        ledger_rows = load_ledger_transactions(user_id)
+        for row in ledger_rows:
+            amount = row['amount']
+            if row['type'] == 'credit':
+                snap['total_credits'] += amount
+            else:
+                snap['total_debits'] += amount
+                cat = row['category']
+                snap['spending_by_category'][cat] = snap['spending_by_category'].get(cat, 0) + amount
+            alerts.append({
+                'date': row['date'], 'internal_ms': row['internal_date_ms'], 'bank': row['bank'],
+                'amount': amount, 'type': row['type'], 'narration': row['description'],
+            })
+        snap['ledger_count'] = len(ledger_rows)
+
         snap['balance'] = round(sum(b['balance'] for b in bank_balances.values()), 2)
         if bank_balances:
             latest = max(bank_balances.items(), key=lambda kv: (kv[1]['internal_ms'], kv[1]['date']))
@@ -2016,7 +2209,7 @@ def compute_bank_snapshot(user_id: str) -> dict:
 
         alerts.sort(key=lambda a: (a['internal_ms'], a['date']), reverse=True)
         snap['recent_transactions'] = alerts[:30]
-        snap['alert_count'] = len(alerts)
+        snap['alert_count'] = len(alerts) - snap.get('ledger_count', 0)
     except Exception as e:
         print(f"[v0] compute_bank_snapshot error: {e}")
     return snap
@@ -2030,18 +2223,55 @@ def format_snapshot_for_ai(snap: dict) -> str:
     txns = "\n".join(
         f"  - {t['date']}: {t['bank']} {t['type'].upper()} ₦{t['amount']:,.2f} | {t['narration'][:40]}"
         for t in snap.get("recent_transactions", [])[:15]
-    ) or "  - No bank transactions yet."
+    ) or "  - No transactions yet."
     bank_str = f" (latest alert from {snap['bank_name']} on {snap['last_date']})" if snap.get("bank_name") else ""
-    return f"""- Current Balance: ₦{snap.get('balance', 0):,.2f}{bank_str}
+    return f"""- Current Bank Balance: ₦{snap.get('balance', 0):,.2f}{bank_str}
 - Total Money In: ₦{snap.get('total_credits', 0):,.2f}
-- Total Money Out: ₦{snap.get('total_debits', 0):,.2f}
+- Total Money Out (bank alerts + cash + receipts): ₦{snap.get('total_debits', 0):,.2f}
 - Bank alerts on file: {snap.get('alert_count', 0)}
+- Cash entries and receipts on file: {snap.get('ledger_count', 0)}
 
-=== SPENDING BY CATEGORY ===
+=== SPENDING BY CATEGORY (all sources) ===
 {cats}
 
-=== RECENT BANK TRANSACTIONS (most recent first) ===
+=== RECENT TRANSACTIONS, ALL SOURCES (most recent first) ===
 {txns}"""
+
+
+LEDGER_SOURCE_LABELS = {"manual_cash": "Cash", "receipt": "Receipt", "bank_alert": "Bank"}
+
+
+def load_ledger_transactions(user_id: str) -> list:
+    """Every Supabase ledger row for this user (cash, receipts, logged alerts),
+    normalized to the dashboard's transaction shape."""
+    res = database.get_transactions(user_id, limit=1000)
+    if res["status"] != "success":
+        print(f"[v0] load_ledger_transactions failed: {res['error']}")
+        return []
+    rows = []
+    for r in res["data"] or []:
+        amount = float(r.get("amount") or 0)
+        if amount <= 0:
+            continue
+        source = database.transaction_source(r)
+        date_str = str(r.get("occurred_on") or r.get("date") or "")
+        date_obj = database._to_date_obj(date_str)
+        internal_ms = int(datetime.combine(date_obj, datetime.min.time()).timestamp() * 1000) if date_obj else 0
+        tx_type = "credit" if (r.get("transaction_type") or "").lower() in ("in", "income", "credit", "deposit") else "debit"
+        rows.append({
+            "id": r.get("id"),
+            "description": (r.get("description") or r.get("vendor") or "Expense")[:50],
+            "amount": amount,
+            "original_amount": r.get("original_amount"),
+            "original_currency": r.get("original_currency") or "NGN",
+            "type": tx_type,
+            "date": date_obj.isoformat() if date_obj else date_str,
+            "internal_date_ms": internal_ms,
+            "bank": LEDGER_SOURCE_LABELS.get(source, "Ledger"),
+            "category": categorizer.coerce_category(r.get("category")),
+            "source": source,
+        })
+    return rows
 
 
 # ========== DASHBOARD ENDPOINT ==========
@@ -2264,60 +2494,15 @@ async def get_dashboard_data(user_id: str = "default"):
             # Add to recent transactions
             recent_transactions.append(tx)
         
-        # 3. Get expenses from manual entries
-        try:
-            expense_results = expenses_collection.get()
-            for i in range(len(expense_results['ids'])):
-                meta = expense_results['metadatas'][i]
-                amount = float(meta.get('amount', 0))
-                category = normalize_category(meta.get('category', 'Other'))
-                cash_out += amount
-                
-                if category not in expense_categories:
-                    expense_categories[category] = 0
-                expense_categories[category] += amount
-        except Exception as e:
-            print(f"Error getting manual expenses: {e}")
-        
-        # 4. Get expenses from uploaded receipts (collection)
-        try:
-            receipt_results = collection.get()
-            for i in range(len(receipt_results['ids'])):
-                meta = receipt_results['metadatas'][i]
-                amount = float(meta.get('total', 0))
-                category = normalize_category(meta.get('category', 'Other'))
-                date = meta.get('date', '')
-                vendor = meta.get('vendor', 'Unknown')
-                original_currency = meta.get('original_currency', meta.get('currency', 'NGN'))
-                
-                # Convert to NGN if foreign currency
-                if original_currency != 'NGN':
-                    exchange_rate = get_exchange_rate(original_currency, "NGN")
-                    amount_ngn = amount * exchange_rate
-                else:
-                    amount_ngn = amount
-                
-                cash_out += amount_ngn
-                
-                if category not in expense_categories:
-                    expense_categories[category] = 0
-                expense_categories[category] += amount_ngn
-                
-                # Add to recent transactions
-                if len(recent_transactions) < 15:
-                    recent_transactions.append({
-                        'id': receipt_results['ids'][i],
-                        'description': vendor,
-                        'amount': amount_ngn,
-                        'original_amount': amount,
-                        'original_currency': original_currency,
-                        'type': 'debit',
-                        'date': date,
-                        'bank': 'Receipt',
-                        'category': category
-                    })
-        except Exception as e:
-            print(f"Error getting receipts: {e}")
+        # 3. Manual cash entries + scanned receipts, from the unified Supabase
+        #    ledger (stored in NGN already, so no conversion here).
+        for tx in load_ledger_transactions(user_id):
+            if tx['type'] == 'credit':
+                cash_in += tx['amount']
+            else:
+                cash_out += tx['amount']
+                expense_categories[tx['category']] = expense_categories.get(tx['category'], 0) + tx['amount']
+            recent_transactions.append(tx)
         
         # Sort recent transactions by precise time first (internal_date_ms),
         # falling back to the date string, so same-day items keep true order.

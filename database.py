@@ -237,7 +237,7 @@ def add_transaction(user_id: str, tx_id: str, amount, **fields) -> dict:
     re-run of the same source can never duplicate a row (Ledger rule)."""
     known = {"vendor", "original_amount", "original_currency", "currency",
              "date", "category", "transaction_type", "source_id",
-             "is_estimate", "document"}
+             "is_estimate", "document", "source", "description"}
     row = {"id": tx_id, "user_id": user_id, "amount": _to_money(amount)}
     extra_meta = {}
     for k, v in fields.items():
@@ -254,8 +254,29 @@ def add_transaction(user_id: str, tx_id: str, amount, **fields) -> dict:
         res = supabase.table("transactions").upsert(row, on_conflict="id").execute()
         return _ok(res.data)
     except Exception as e:
+        # Until scripts/sql/002_transactions_unified_source.sql is applied the
+        # source/description columns don't exist; keep them in metadata instead
+        # of losing the whole write.
+        msg = str(e)
+        if "source" in msg or "description" in msg:
+            meta = dict(row.get("metadata") or {})
+            for col in ("source", "description"):
+                if col in row:
+                    meta[col] = row.pop(col)
+            row["metadata"] = meta
+            try:
+                res = supabase.table("transactions").upsert(row, on_conflict="id").execute()
+                return _ok(res.data)
+            except Exception as e2:
+                e = e2
         print(f"[Database] add_transaction failed: {e}")
         return _err(e)
+
+
+def transaction_source(row: dict) -> str:
+    """Where a ledger row came from: bank_alert, manual_cash or receipt."""
+    meta = row.get("metadata") or {}
+    return row.get("source") or (meta.get("source") if isinstance(meta, dict) else None) or "receipt"
 
 
 def get_transactions(user_id: str, limit: int = 500) -> dict:
@@ -697,7 +718,7 @@ def get_chat_financial_context(user_id: str, limit: int = 50) -> dict:
     """
     try:
         rows = (supabase.table("transactions")
-                .select("amount, transaction_type, category, vendor, date, occurred_on, currency")
+                .select("*")
                 .eq("user_id", user_id)
                 .order("occurred_on", desc=True)
                 .order("created_at", desc=True)
@@ -745,7 +766,7 @@ def get_chat_financial_context(user_id: str, limit: int = 50) -> dict:
                 "currency": r.get("currency") or "NGN",
                 "category": r.get("category") or "other",
                 "type": "income" if _is_income(r) else "expense",
-                "source": "ledger",
+                "source": transaction_source(r),
             })
 
         # --- Merge in Gmail bank-alert data -----------------------------------
