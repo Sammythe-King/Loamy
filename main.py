@@ -2274,6 +2274,25 @@ def load_ledger_transactions(user_id: str) -> list:
     return rows
 
 
+@app.get("/ledger-log/{user_id}")
+async def get_ledger_log(user_id: str, limit: int = 8):
+    """Recent WhatsApp cash entries and scanned receipts (source IN
+    manual_cash, receipt) for the dashboard's log widget."""
+    if not _is_real_user_id(user_id):
+        return {"status": "error", "data": None, "error": "invalid_user_id"}
+    try:
+        rows = await asyncio.to_thread(load_ledger_transactions, user_id)
+        items = [r for r in rows if r.get("source") in ("manual_cash", "receipt")]
+        items.sort(key=lambda r: r.get("internal_date_ms") or 0, reverse=True)
+        return {
+            "status": "success",
+            "data": {"items": items[:max(1, min(limit, 50))], "base_currency": "NGN"},
+            "error": None,
+        }
+    except Exception as e:
+        return {"status": "error", "data": None, "error": str(e)}
+
+
 # ========== DASHBOARD ENDPOINT ==========
 
 @app.get("/get-dashboard-data")
@@ -3004,6 +3023,41 @@ def _scan_bank_emails_for_review(user_id="default", user_name="there", force=Fal
             added += 1
         except Exception as e:
             print(f"[REVIEW] scan add error: {e}")
+
+    # WhatsApp cash entries and receipts that Gemini couldn't place also belong
+    # in the queue, so every "Uncategorized" item has one place to be fixed.
+    for tx in load_ledger_transactions(user_id):
+        if tx.get("source") not in ("manual_cash", "receipt"):
+            continue
+        if tx.get("category") != categorizer.UNCATEGORIZED:
+            continue
+        source_id = f"ledger_{tx['id']}"
+        vendor_name = tx.get("description") or "Expense"
+        try:
+            already = review_queue_collection.get(where={"source_id": source_id})
+            if already["ids"]:
+                continue
+            review_queue_collection.add(
+                ids=[f"rev_{source_id}"],
+                documents=[f"Review: {vendor_name} {tx['amount']}"],
+                metadatas=[{
+                    "user_id": user_id,
+                    "vendor": vendor_name,
+                    "amount": tx["amount"],
+                    "transaction_type": tx.get("type") or "debit",
+                    "date": tx.get("date") or "",
+                    "source_id": source_id,
+                    "status": "pending",
+                    "nudge": _build_nudge_message(user_name, vendor_name, tx["amount"], tx.get("type") or "debit"),
+                    "user_reply": "",
+                    "category": "",
+                    "created_at": tx.get("date") or "",
+                }]
+            )
+            added += 1
+        except Exception as e:
+            print(f"[REVIEW] ledger scan add error: {e}")
+
     print(f"[REVIEW] scan checked {len(emails)} emails, queued {added} new item(s)")
     return added
 
@@ -3166,7 +3220,11 @@ Reply with ONLY the category name, nothing else."""
 
         # 2. Tag the underlying bank transaction (if linked)
         source_id = meta.get("source_id", "")
-        if source_id:
+        if source_id.startswith("ledger_"):
+            res = database.update_transaction_category(source_id[len("ledger_"):], category)
+            if res["status"] != "success":
+                print(f"[REVIEW] Could not tag ledger transaction: {res['error']}")
+        elif source_id:
             try:
                 tx = gmail_data_collection.get(ids=[source_id])
                 if tx["ids"]:
@@ -6333,6 +6391,28 @@ def _ai_categorize_bank_alerts(emails: list) -> int:
     backfill of thousands of alerts spreads across syncs instead of stalling
     one. Low-confidence / failed results stay "Uncategorized" and are marked
     as checked so they surface in the Review Queue instead of being retried."""
+    # Earlier syncs let Gemini file generic P2P/POS alerts as "Transfers & Cash".
+    # Re-run the guardrails on those AI-assigned labels so they drop back into
+    # the Review Queue. User-chosen categories (reviewed=True) are untouched.
+    demoted = 0
+    for e in emails:
+        if not e.get("is_bank_alert") or e.get("reviewed"):
+            continue
+        current = str(e.get("category") or "").strip()
+        is_ai_label = e.get("category_source") == "gemini" or current.lower() in ("transfer", "transfers", "transfers & cash")
+        if not is_ai_label or current.lower() in ("", "uncategorized"):
+            continue
+        guarded = categorizer.apply_guardrails({
+            "vendor": _extract_vendor_name(e.get("narration") or "", e.get("transaction_type") or "debit"),
+            "description": e.get("narration") or e.get("subject") or "",
+        }, {"category": categorizer.coerce_category(current), "confidence": e.get("category_confidence") or 0.0})
+        if guarded["category"] == categorizer.UNCATEGORIZED:
+            e["category"] = categorizer.UNCATEGORIZED
+            e["category_source"] = "gemini"
+            demoted += 1
+    if demoted:
+        print(f"[categorizer] {demoted} ambiguous transfer(s) moved back to Uncategorized")
+
     targets = [
         e for e in emails
         if e.get("is_bank_alert")
@@ -6340,7 +6420,7 @@ def _ai_categorize_bank_alerts(emails: list) -> int:
         and str(e.get("category") or "").strip().lower() in ("", "banking", "other", "uncategorized")
     ][:_AI_CATEGORIZE_PER_SYNC]
     if not targets:
-        return 0
+        return demoted
 
     items = [{
         "amount": e.get("amount"),
@@ -6356,4 +6436,4 @@ def _ai_categorize_bank_alerts(emails: list) -> int:
         email["category_source"] = "gemini"
     resolved = sum(1 for r in results if r["category"] != categorizer.UNCATEGORIZED)
     print(f"[categorizer] {resolved}/{len(targets)} bank alerts categorized by Gemini")
-    return len(targets)
+    return len(targets) + demoted

@@ -60,6 +60,59 @@ _LEGACY_ALIASES = {
 
 _CANONICAL_BY_LOWER = {c.lower(): c for c in STANDARD_CATEGORIES}
 
+TRANSFERS = "Transfers & Cash"
+
+# Obvious consumer merchants. An alert naming one of these is safe to
+# auto-categorize; anything else that looks like a transfer is left for the user.
+KNOWN_MERCHANTS = [
+    "shoprite", "spar", "justrite", "maxcare", "carrefour", "super u", "ebeano", "prince ebeano",
+    "market square", "hubmart", "mart",
+    "uber", "bolt", "indrive", "rida", "taxify", "total energies", "totalenergies", "oando",
+    "conoil", "mobil", "ardova", "air peace", "arik", "ibom air",
+    "mtn", "airtel", "glo", "9mobile", "dstv", "gotv", "startimes", "multichoice", "ikedc",
+    "ekedc", "aedc", "phed", "ibedc", "spectranet", "smile", "starlink",
+    "netflix", "spotify", "apple.com", "itunes", "google", "youtube", "showmax", "prime video",
+    "bet9ja", "sportybet", "betking", "filmhouse", "genesis cinema", "silverbird",
+    "chowdeck", "glovo", "jumia food", "domino", "chicken republic", "kfc", "mr biggs",
+    "sweet sensation", "tantalizers", "cold stone", "burger king", "pizza hut", "starbucks",
+    "jumia", "konga", "amazon", "aliexpress", "temu", "shein", "slot", "zara", "h&m", "game store",
+]
+
+_MERCHANT_RE = re.compile(
+    r"(?<![a-z0-9])(" + "|".join(re.escape(m) for m in KNOWN_MERCHANTS) + r")(?![a-z0-9])"
+)
+
+# Peer-to-peer / POS / generic debit alert markers (NIBSS FIP/NIP refs, mobile
+# banking "MB:", "TRANSFER TO", inward credits, USSD, POS terminals).
+_AMBIGUOUS_TRANSFER_RE = re.compile(
+    r"(fip\s*:|nip\s*:|nip/|\bmb\s*:|mobile\s*banking|transfer|\btrf\b|\btrfr?\b|\btrx\b|"
+    r"\bpos\b|cpwinward|inward|outward|nibss|ussd|\bto\s+[a-z]+\s+[a-z]+|"
+    r"\bfrom\s+[a-z]+\s+[a-z]+|\bopay\b|\bpalmpay\b|\bmoniepoint\b|\bkuda\b)"
+)
+
+
+def has_known_merchant(text: str) -> bool:
+    return bool(_MERCHANT_RE.search(str(text or "").lower()))
+
+
+def is_ambiguous_transfer(text: str) -> bool:
+    return bool(_AMBIGUOUS_TRANSFER_RE.search(str(text or "").lower()))
+
+
+def apply_guardrails(item: dict, result: dict) -> dict:
+    """Never auto-file generic transfers. The user decides via the Review Queue.
+
+    - "Transfers & Cash" is never a final AI answer.
+    - A transfer/POS/ambiguous alert without an obvious consumer merchant is
+      "Uncategorized", whatever Gemini guessed."""
+    text = f"{item.get('vendor') or ''} {item.get('description') or ''}"
+    category = result.get("category") or UNCATEGORIZED
+    if category == TRANSFERS:
+        return {"category": UNCATEGORIZED, "confidence": result.get("confidence", 0.0)}
+    if category != UNCATEGORIZED and is_ambiguous_transfer(text) and not has_known_merchant(text):
+        return {"category": UNCATEGORIZED, "confidence": result.get("confidence", 0.0)}
+    return result
+
 _model = None
 _model_lock = threading.Lock()
 # Same vendor + direction almost always means the same category, so a repeat
@@ -115,7 +168,10 @@ Guidance:
 - Electricity, DSTV/GOtv, airtime, data, internet, rent -> "Utilities & Bills".
 - Netflix, Spotify, cinemas, betting, games -> "Entertainment & Subscriptions".
 - Retail, fashion, electronics, online stores -> "Shopping".
-- Person-to-person transfers, NIP/FIP transfers, ATM withdrawals, cash -> "Transfers & Cash".
+- Person-to-person transfers, NIP/FIP/MB transfers ("FIP:MB:...", "TRANSFER TO ..."),
+  POS transfers, inward credits and any alert that does NOT name an obvious consumer
+  merchant -> "Uncategorized". The user will label these themselves.
+- Never guess a category from a person's name.
 - If you genuinely cannot tell, use "Uncategorized" with low confidence.
 
 Give a confidence between 0 and 1 for each item.
@@ -182,6 +238,7 @@ def categorize_batch(items: list) -> list:
         chunk_idx = pending[start:start + BATCH_SIZE]
         chunk_results = _categorize_chunk([items[i] for i in chunk_idx])
         for i, res in zip(chunk_idx, chunk_results):
+            res = apply_guardrails(items[i], res)
             results[i] = res
             if res["category"] != UNCATEGORIZED:
                 _cache[_cache_key(items[i])] = res

@@ -4,6 +4,8 @@ import { useNavigate } from "react-router-dom";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import NotificationBanner from "./NotificationBanner";
 import { runActivitySync } from "./services/activitySyncService";
+import LedgerLogWidget from "./LedgerLogWidget";
+import ReviewQueueNavButton from "./ReviewQueueNavButton";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
@@ -447,6 +449,7 @@ const Dashboard = () => {
             <i className="fa-solid fa-comments"></i>
             <span>Chat</span>
           </button>
+          <ReviewQueueNavButton userId={getSessionUserId()} onClick={() => handleNavigation("/review-queue")} />
           <button onClick={handleLogout} className="nav-btn logout-btn">
             <i className="fa-solid fa-right-from-bracket"></i>
           </button>
@@ -605,6 +608,8 @@ const Dashboard = () => {
             </div>
           )}
         </div>
+
+        <LedgerLogWidget userId={getSessionUserId()} />
 
       </div>
 
