@@ -292,11 +292,7 @@ async def vector_store_readiness_gate(request: Request, call_next):
 # wildcard with credentials), so this is both permissive and spec-compliant.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://loamy-ebon.vercel.app",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173"
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
