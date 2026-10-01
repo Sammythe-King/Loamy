@@ -21,7 +21,26 @@ from chat import router as chat_router
 # Import WhatsApp transport module (Meta Cloud API webhooks + outbound sends)
 from whatsapp import router as whatsapp_router, set_ai_handler, set_receipt_handler, WHATSAPP_FORMAT_RULES
 
-app = FastAPI()
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Names below (scheduler, _warm_vector_store, ...) are defined further down
+    # in this module; they resolve at call time, after the module has loaded.
+    _start_scheduler()
+    # Fire-and-forget: the ONNX embedding model is warmed in a worker thread so
+    # Uvicorn binds the port and serves traffic immediately on Render cold starts.
+    warmup_task = asyncio.create_task(asyncio.to_thread(_warm_vector_store))
+    try:
+        yield
+    finally:
+        _stop_scheduler()
+        if not warmup_task.done():
+            warmup_task.cancel()
+
+
+app = FastAPI(lifespan=lifespan)
 
 # Include chat routes
 app.include_router(chat_router)
@@ -122,21 +141,145 @@ async def root():
 # By using ../ we save the database one folder UP, so Live Server won't see it and refresh your page!
 db_path = os.path.join(os.path.dirname(__file__), "..", "fintech_ai_vault_hidden")
 client = chromadb.PersistentClient(path=db_path)
-collection = client.get_or_create_collection(name="user_transactions")
 
-goals_collection = client.get_or_create_collection(name="user_goals")
-accounts_collection = client.get_or_create_collection(name="user_accounts")
-expenses_collection = client.get_or_create_collection(name="user_expenses")
-chats_collection = client.get_or_create_collection(name="user_chats") # Added to retrieve history
-users_collection = client.get_or_create_collection(name="users") # For multi-user authentication
-gmail_data_collection = client.get_or_create_collection(name="gmail_data")  # For Gmail email data
-pending_conversions_collection = client.get_or_create_collection(name="pending_conversions")  # For tracking currency estimates awaiting bank true-up
-invoices_collection = client.get_or_create_collection(name="invoices")  # For tracking money owed (invoices)
-review_queue_collection = client.get_or_create_collection(name="review_queue")  # Unrecognized bank transactions awaiting user clarification
-vendor_memory_collection = client.get_or_create_collection(name="vendor_memory")  # Learned vendor -> category rules (Smart Memory)
-notifications_collection = client.get_or_create_collection(name="notifications")  # In-app notifications (e.g. daily 5pm invoice reminder)
-sync_state_collection = client.get_or_create_collection(name="sync_state")  # Delta-sync bookmarks: last_synced_timestamp per user
-gmail_credentials_collection = client.get_or_create_collection(name="gmail_credentials")  # Per-user Gmail refresh tokens for server-side auto-sync
+# One shared embedding function for every collection: the ONNX session is
+# loaded once (not once per collection), which keeps memory low on Render's
+# free tier and lets a single warmup call prime all collections. Construction
+# is lazy - the all-MiniLM-L6-v2 weights are only downloaded/loaded on first call.
+try:
+    from chromadb.utils import embedding_functions as _chroma_ef
+    _shared_embedding_fn = _chroma_ef.DefaultEmbeddingFunction()
+except Exception as _ef_err:
+    print(f"[VectorStore] Shared embedding function unavailable, using per-collection default: {_ef_err}")
+    _shared_embedding_fn = None
+
+
+def _get_collection(name: str):
+    if _shared_embedding_fn is not None:
+        try:
+            return client.get_or_create_collection(name=name, embedding_function=_shared_embedding_fn)
+        except Exception as e:
+            # A persisted collection with a conflicting embedding config must
+            # still open, so fall back to Chroma's stored default.
+            print(f"[VectorStore] Collection '{name}' rejected shared embedding fn, using default: {e}")
+    return client.get_or_create_collection(name=name)
+
+
+collection = _get_collection("user_transactions")
+
+goals_collection = _get_collection("user_goals")
+accounts_collection = _get_collection("user_accounts")
+expenses_collection = _get_collection("user_expenses")
+chats_collection = _get_collection("user_chats") # Added to retrieve history
+users_collection = _get_collection("users") # For multi-user authentication
+gmail_data_collection = _get_collection("gmail_data")  # For Gmail email data
+pending_conversions_collection = _get_collection("pending_conversions")  # For tracking currency estimates awaiting bank true-up
+invoices_collection = _get_collection("invoices")  # For tracking money owed (invoices)
+review_queue_collection = _get_collection("review_queue")  # Unrecognized bank transactions awaiting user clarification
+vendor_memory_collection = _get_collection("vendor_memory")  # Learned vendor -> category rules (Smart Memory)
+notifications_collection = _get_collection("notifications")  # In-app notifications (e.g. daily 5pm invoice reminder)
+sync_state_collection = _get_collection("sync_state")  # Delta-sync bookmarks: last_synced_timestamp per user
+gmail_credentials_collection = _get_collection("gmail_credentials")  # Per-user Gmail refresh tokens for server-side auto-sync
+
+
+# ============================================
+# VECTOR STORE WARMUP (ONNX embedding model)
+# ============================================
+# Root cause of the cold-start "CORS" errors: Chroma downloads and loads the
+# all-MiniLM-L6-v2 ONNX weights lazily on the first add/query, i.e. INSIDE a
+# request such as /gmail/fetch-emails. That synchronous work blocked the event
+# loop for seconds, the browser connection timed out (net::ERR_FAILED) and it
+# was misreported as CORS. The lifespan handler now runs _warm_vector_store in a
+# worker thread at boot, and vector-dependent routes wait (asynchronously) for it.
+VECTOR_WARMUP_ATTEMPTS = 3
+VECTOR_WARMUP_RETRY_DELAY_SECONDS = 10
+VECTOR_REQUEST_WAIT_SECONDS = 20
+VECTOR_RETRY_AFTER_SECONDS = 5
+
+_vector_ready = threading.Event()
+_vector_state = {"status": "warming", "error": None, "seconds": None}
+
+
+def _warm_vector_store():
+    """Download + load the embedding model once. Never raises."""
+    started = time.monotonic()
+    for attempt in range(1, VECTOR_WARMUP_ATTEMPTS + 1):
+        try:
+            if _shared_embedding_fn is not None:
+                embed = _shared_embedding_fn
+            else:
+                embed = getattr(collection, "_embedding_function", None)
+            if embed is not None:
+                embed(["warmup"])
+            elapsed = round(time.monotonic() - started, 2)
+            _vector_state.update(status="ready", error=None, seconds=elapsed)
+            _vector_ready.set()
+            print(f"[VectorStore] Embedding model ready in {elapsed}s (attempt {attempt}).")
+            return
+        except Exception as e:
+            _vector_state["error"] = f"{type(e).__name__}: {e}"
+            print(f"[VectorStore] Warmup attempt {attempt}/{VECTOR_WARMUP_ATTEMPTS} failed: {_vector_state['error']}")
+            if attempt < VECTOR_WARMUP_ATTEMPTS:
+                time.sleep(VECTOR_WARMUP_RETRY_DELAY_SECONDS * attempt)
+
+    # Degraded: stop gating requests so the app behaves as before (Chroma will
+    # retry loading lazily) instead of returning 503 forever.
+    _vector_state["status"] = "degraded"
+    _vector_ready.set()
+    print("[VectorStore] Warmup gave up; continuing in degraded mode (lazy model load).")
+
+
+async def wait_for_vector_store(timeout: float = VECTOR_REQUEST_WAIT_SECONDS) -> bool:
+    """Poll without blocking the event loop or tying up a threadpool worker."""
+    deadline = time.monotonic() + timeout
+    while not _vector_ready.is_set():
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(0.25)
+    return True
+
+
+_VECTOR_EXACT_PATHS = {
+    "/chat",
+    "/get-dashboard-data",
+    "/create-invoice",
+    "/categorize-transaction",
+    "/add-bill",
+    "/rename-goal",
+    "/assign-to-goal",
+    "/sync-gmail-data",
+}
+_VECTOR_PATH_PREFIXES = (
+    "/review-queue",
+    "/gmail/fetch-emails",
+    "/gmail/server-sync",
+    "/mark-invoice-paid/",
+)
+
+
+def _is_vector_path(path: str) -> bool:
+    return path in _VECTOR_EXACT_PATHS or path.startswith(_VECTOR_PATH_PREFIXES)
+
+
+@app.middleware("http")
+async def vector_store_readiness_gate(request: Request, call_next):
+    if (
+        request.method != "OPTIONS"
+        and not _vector_ready.is_set()
+        and _is_vector_path(request.url.path)
+        and not await wait_for_vector_store()
+    ):
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "data": None, "error": "vector_store_warming_up"},
+            headers={"Retry-After": str(VECTOR_RETRY_AFTER_SECONDS), **_cors_headers_for(request)},
+        )
+    return await call_next(request)
+
+
+@app.get("/health/vector-store")
+async def vector_store_health():
+    return {"status": "success", "data": dict(_vector_state), "error": None}
 
 
 # ============================================
@@ -215,6 +358,9 @@ GMAIL_AUTOSYNC_INTERVAL_MINUTES = 10
 
 def _gmail_autosync_job():
     """Wrapper the scheduler calls every GMAIL_AUTOSYNC_INTERVAL_MINUTES."""
+    if not _vector_ready.wait(timeout=120):
+        print("[Scheduler] Vector store still warming up; skipping this Gmail auto-sync run.")
+        return
     print("[Scheduler] Running periodic Gmail auto-sync for all linked users...")
     try:
         # maybe_autosync_all_users is defined later in this module, but by the
@@ -251,7 +397,6 @@ except Exception as e:  # pragma: no cover - environment without apscheduler
     print(f"[Scheduler] APScheduler unavailable, scheduled jobs disabled: {e}")
 
 
-@app.on_event("startup")
 def _start_scheduler():
     """Start the background scheduler cleanly on app startup."""
     if scheduler and not scheduler.running:
@@ -263,7 +408,6 @@ def _start_scheduler():
         )
 
 
-@app.on_event("shutdown")
 def _stop_scheduler():
     """Shut the scheduler down cleanly on app termination."""
     if scheduler and scheduler.running:
@@ -1829,7 +1973,16 @@ async def _whatsapp_ai_handler(text: str, from_phone: str) -> str:
     return result.get("reply", "")
 
 
-set_ai_handler(_whatsapp_ai_handler)
+VECTOR_WARMING_REPLY = "I'm just waking up after a restart. Please resend that in a few seconds."
+
+
+async def _vector_guarded_ai_handler(text: str, from_phone: str) -> str:
+    if not await wait_for_vector_store():
+        return VECTOR_WARMING_REPLY
+    return await _whatsapp_ai_handler(text, from_phone)
+
+
+set_ai_handler(_vector_guarded_ai_handler)
 
 
 async def _whatsapp_receipt_handler(file_data: bytes, mime_type: str, from_phone: str) -> str:
@@ -1886,7 +2039,13 @@ async def _whatsapp_receipt_handler(file_data: bytes, mime_type: str, from_phone
     )
 
 
-set_receipt_handler(_whatsapp_receipt_handler)
+async def _vector_guarded_receipt_handler(file_data: bytes, mime_type: str, from_phone: str) -> str:
+    if not await wait_for_vector_store():
+        return VECTOR_WARMING_REPLY
+    return await _whatsapp_receipt_handler(file_data, mime_type, from_phone)
+
+
+set_receipt_handler(_vector_guarded_receipt_handler)
 
 
 @app.get("/get-goals")
