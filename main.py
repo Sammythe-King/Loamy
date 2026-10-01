@@ -47,28 +47,28 @@ app.include_router(chat_router)
 # Include WhatsApp webhook routes
 app.include_router(whatsapp_router)
 
-ALLOWED_ORIGINS = [
-    "https://loamy-ebon.vercel.app",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-] + [o.strip() for o in os.getenv("EXTRA_CORS_ORIGINS", "").split(",") if o.strip()]
-# Vercel preview deployments of the frontend (loamy-<hash>-<team>.vercel.app).
-ALLOWED_ORIGIN_REGEX = r"^https://loamy[a-z0-9-]*\.vercel\.app$"
-_allowed_origin_re = re.compile(ALLOWED_ORIGIN_REGEX)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# NOTE on where CORSMiddleware gets registered: Starlette's add_middleware()
+# inserts each call at position 0 of its internal list, then wraps the ASGI
+# app in REVERSE registration order. That means the LAST middleware added ends
+# up OUTERMOST (it sees every request first and every response last). The
+# actual app.add_middleware(CORSMiddleware, ...) call lives further down this
+# file - AFTER owner_kill_switch and vector_store_readiness_gate are defined -
+# so CORS wraps both of them. That guarantees every OPTIONS preflight is
+# answered with CORS headers before either custom middleware runs, and every
+# response they short-circuit (e.g. the kill switch's 503) still gets
+# Access-Control-Allow-Origin attached. Registering it here instead (textually
+# first, as most tutorials show) would make it innermost and bring back this
+# exact "no Access-Control-Allow-Origin on preflight" bug.
 
 
 def _cors_headers_for(request: Request) -> dict:
+    # Origin-reflecting wildcard: allow_credentials=True requires a concrete
+    # origin (the CORS spec forbids a literal "*" alongside credentials), so
+    # this mirrors what CORSMiddleware itself does and reflects whatever
+    # Origin the caller sent. Used for responses built by hand (error/503
+    # handlers) that bypass CORSMiddleware's own response-header injection.
     origin = request.headers.get("origin")
-    if origin and (origin in ALLOWED_ORIGINS or _allowed_origin_re.match(origin)):
+    if origin:
         return {
             "Access-Control-Allow-Origin": origin,
             "Access-Control-Allow-Credentials": "true",
@@ -275,6 +275,38 @@ async def vector_store_readiness_gate(request: Request, call_next):
             headers={"Retry-After": str(VECTOR_RETRY_AFTER_SECONDS), **_cors_headers_for(request)},
         )
     return await call_next(request)
+
+
+# ============================================
+# CORS (registered last on purpose - see the NOTE near app = FastAPI() above)
+# ============================================
+# Everything that matters for "No 'Access-Control-Allow-Origin' header on
+# OPTIONS" lives here: add_middleware() wraps in reverse-registration order, so
+# adding CORSMiddleware AFTER owner_kill_switch and vector_store_readiness_gate
+# makes it the outermost layer. It now intercepts every preflight OPTIONS
+# request itself, before either of those middlewares runs, and it wraps their
+# responses too, so every reply - success, 503, or otherwise - carries CORS
+# headers. allow_origins=["*"] + allow_credentials=True is intentional:
+# Starlette detects credentialed requests and reflects the caller's actual
+# Origin instead of a literal "*" (the CORS spec forbids combining a literal
+# wildcard with credentials), so this is both permissive and spec-compliant.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
+
+
+# Safety net only: CORSMiddleware above already answers preflight OPTIONS
+# requests itself at the ASGI level before any route is matched, so this
+# should normally never be hit. It exists in case some other layer (a future
+# middleware, a proxy quirk, etc.) ever lets an OPTIONS request fall through.
+@app.options("/{full_path:path}")
+async def options_handler(full_path: str):
+    return {"status": "ok"}
 
 
 @app.get("/health/vector-store")
