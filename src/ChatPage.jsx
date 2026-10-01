@@ -107,6 +107,18 @@ const ChatPage = () => {
             const res = await fetch(`${API_URL}/get-chats?user_id=${encodeURIComponent(userId)}`);
             const data = await res.json();
             setChatList(data.chats || []);
+
+            const history = (data.history || []).map((row) => ({
+                sender: row.sender === "assistant" ? "ai" : "user",
+                content: row.message,
+                isHTML: false,
+                channel: row.channel,
+                createdAt: row.created_at,
+            }));
+            if (history.length > 0) {
+                setMessages((prev) => (prev.length === 0 ? history : prev));
+                setShowWelcome(false);
+            }
         } catch (e) {
             console.error("Load chats error:", e);
         } finally {
@@ -674,6 +686,9 @@ const createNewChat = async (title) => {
                         <>
                             {messages.map((msg, i) => (
                                 <div key={i} className={`message ${msg.sender}-message`}>
+                                    {msg.channel === "whatsapp" && (
+                                        <span className="message-channel-tag">via WhatsApp</span>
+                                    )}
                                     {msg.isHTML ? (
                                         <div dangerouslySetInnerHTML={{ __html: msg.content }} />
                                     ) : (

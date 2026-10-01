@@ -507,6 +507,65 @@ def delete_chat(chat_id: str) -> dict:
 
 
 # ============================================
+# CHAT HISTORY  (one row per message, shared across WhatsApp + web app)
+# ============================================
+CHAT_CHANNELS = {"whatsapp", "app"}
+
+
+def _normalize_channel(channel: str) -> str:
+    channel = (channel or "app").lower()
+    if channel in ("web", "webapp", "web_app"):
+        return "app"
+    return channel if channel in CHAT_CHANNELS else "app"
+
+
+def add_chat_turn(user_id: str, user_message: str, assistant_message: str,
+                  channel: str = "app", user_at: datetime = None) -> dict:
+    """Persist one user message + the assistant reply in a single insert.
+
+    Explicit timestamps keep the pair in order even though both rows are
+    written after the reply is generated."""
+    if not user_id:
+        return _err("user_id is required")
+    channel = _normalize_channel(channel)
+    now = datetime.utcnow()
+    asked_at = user_at or now
+    if asked_at >= now:
+        asked_at = now - timedelta(milliseconds=1)
+    rows = []
+    if (user_message or "").strip():
+        rows.append({"user_id": user_id, "sender": "user", "message": user_message.strip(),
+                     "channel": channel, "created_at": asked_at.isoformat() + "Z"})
+    if (assistant_message or "").strip():
+        rows.append({"user_id": user_id, "sender": "assistant", "message": assistant_message.strip(),
+                     "channel": channel, "created_at": now.isoformat() + "Z"})
+    if not rows:
+        return _ok([])
+    try:
+        res = supabase.table("chat_history").insert(rows).execute()
+        return _ok(res.data or [])
+    except Exception as e:
+        print(f"[Database] add_chat_turn failed: {e}")
+        return _err(e)
+
+
+def get_chat_history(user_id: str, limit: int = 15, since: str = None) -> dict:
+    """Most recent `limit` messages for a user across ALL channels, returned
+    oldest-first. With `since`, only rows created after that ISO timestamp."""
+    try:
+        query = (supabase.table("chat_history")
+                 .select("id, user_id, sender, message, channel, created_at")
+                 .eq("user_id", user_id))
+        if since:
+            query = query.gt("created_at", since)
+        res = query.order("created_at", desc=True).limit(max(1, min(limit, 500))).execute()
+        rows = list(reversed(res.data or []))
+        return _ok(rows)
+    except Exception as e:
+        return _err(e)
+
+
+# ============================================
 # AI context: deterministic financial snapshot for one user
 # ============================================
 def get_financial_context(user_id: str, recent_limit: int = 15) -> dict:

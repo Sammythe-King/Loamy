@@ -9,6 +9,7 @@ import asyncio
 import threading
 import hashlib
 import secrets
+import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
@@ -851,23 +852,14 @@ async def chat_with_history(query: dict):
     try:
         # --- NEW: Retrieve Recent Chat History ---
         # This gives the AI short-term memory of what it just proposed
+        # Unified, cross-channel memory: the last 15 messages from chat_history
+        # for THIS user, whether they came from WhatsApp or the web app.
         recent_chat_context = "No previous conversation in this session."
+        asked_at = datetime.utcnow()
         try:
-            chats = chats_collection.get()
-            if chats['ids']:
-                # Find the most recently updated chat
-                latest_chat_idx = max(range(len(chats['ids'])), key=lambda i: chats['metadatas'][i].get('updated_at', ''))
-                latest_doc = chats['documents'][latest_chat_idx]
-                if latest_doc:
-                    messages = json.loads(latest_doc)
-                    # Get last 6 messages
-                    recent_msgs = []
-                    for msg in messages[-6:]:
-                        sender = "Advisor" if msg.get("sender") == "ai" else "User"
-                        content = msg.get('content', '')
-                        recent_msgs.append(f"{sender}: {content}")
-                    if recent_msgs:
-                        recent_chat_context = "\n\n".join(recent_msgs)
+            unified = chat_service.build_history_context(user_id)
+            if unified:
+                recent_chat_context = unified
         except Exception as e:
             print(f"Error fetching chat history: {e}")
 
@@ -1528,6 +1520,13 @@ async def chat_with_history(query: dict):
         except Exception as e:
             print(f"[INVOICE] Error parsing CREATE_INVOICE marker: {e}")
 
+        # WhatsApp turns are recorded by whatsapp.py after delivery (it knows the
+        # original message, not the snapshot-prefixed prompt), so only log web here.
+        if channel != "whatsapp":
+            await asyncio.to_thread(
+                chat_service.record_chat_turn, user_id, user_msg, reply_text, "app", asked_at
+            )
+
         return {"reply": reply_text, "invoice_created": invoice_created}
         
     except Exception as e:
@@ -1653,6 +1652,9 @@ def extract_manual_transaction_call(text: str):
         "a personal finance app. If the user is REPORTING money they already spent "
         "(e.g. 'I spent 1000 MUR on groceries yesterday', 'paid 3k for a taxi'), you MUST call "
         "add_manual_transaction, resolving relative dates to YYYY-MM-DD and shorthand like 3k to 3000. "
+        "Currency: use the code the user states (₦/naira -> NGN, Rs/rupees -> MUR, $ -> USD). If the "
+        "user gives NO currency, set currency to NGN (the base currency); the app will append a note "
+        "letting them correct it.\n"
         "Questions about spending, goals, invoices or anything else must NOT call the tool.\n\n"
         f"User message: {text}"
     )
@@ -1669,10 +1671,73 @@ def extract_manual_transaction_call(text: str):
     return None
 
 
+_CURRENCY_MENTION_RE = re.compile(
+    r"(₦|\bngn\b|\bnaira\b|\bmur\b|\brs\.?(?=\s*\d)|\brupees?\b|\$|\busd\b|\bdollars?\b|"
+    r"£|\bgbp\b|\bpounds?\b|€|\beur\b|\beuros?\b|\bkes\b|\bzar\b|\binr\b)",
+    re.IGNORECASE,
+)
+_CURRENCY_CORRECTION_RE = re.compile(
+    r"^\s*(?:it\s+was\s+)?([\d,]+(?:\.\d+)?)\s*(MUR|NGN|USD|EUR|GBP|rupees?|naira)\s*\.?\s*$",
+    re.IGNORECASE,
+)
+_CURRENCY_WORDS = {"rupee": "MUR", "rupees": "MUR", "naira": "NGN"}
+_CORRECTION_WINDOW_SECONDS = 30 * 60
+
+# user_id -> the last expense logged with an assumed (not stated) currency, so a
+# follow-up "600 MUR" can re-log it in the right currency.
+_pending_currency_corrections: dict = {}
+
+
+def has_explicit_currency(text: str) -> bool:
+    return bool(_CURRENCY_MENTION_RE.search(text or ""))
+
+
+async def _try_currency_correction(text: str, user_id: str):
+    """Handle a reply like "600 MUR" that fixes the last ambiguous expense."""
+    match = _CURRENCY_CORRECTION_RE.match(text or "")
+    pending = _pending_currency_corrections.get(user_id)
+    if not match or not pending:
+        return None
+    if time.time() - pending["logged_at"] > _CORRECTION_WINDOW_SECONDS:
+        _pending_currency_corrections.pop(user_id, None)
+        return None
+
+    amount = float(match.group(1).replace(",", ""))
+    currency_token = match.group(2).lower()
+    currency = _CURRENCY_WORDS.get(currency_token, currency_token.upper())
+    if abs(amount - pending["original_amount"]) > 0.01:
+        return None
+    if currency == pending["currency"]:
+        _pending_currency_corrections.pop(user_id, None)
+        return f"Got it - keeping it as {format_logged_amount(pending['amount_ngn'])}."
+
+    result = await asyncio.to_thread(
+        add_manual_transaction, user_id, amount, currency, pending["category"],
+        pending["description"], pending["date"], "manual_cash",
+    )
+    if result["status"] != "success":
+        return "I couldn't update that expense just now. Please try again in a moment."
+    await asyncio.to_thread(database.delete_transaction, pending["tx_id"])
+    _pending_currency_corrections.pop(user_id, None)
+
+    tx = result["data"]
+    return (
+        "\u270d\ufe0f *Expense Updated!*\n"
+        f"• *Merchant*: {tx['description']}\n"
+        f"• *Amount*: {format_logged_amount(tx['amount_ngn'], tx['original_amount'], tx['original_currency'])}\n"
+        f"• *Category*: {tx['category']}\n"
+        "\n"
+        "_Synced to your Loamy dashboard_"
+    )
+
+
 async def _try_log_manual_transaction(text: str, user_id: str):
     """Returns a confirmation card if the message was a spend report, else None."""
     if not re.search(r"\d", text or ""):
         return None
+    corrected = await _try_currency_correction(text, user_id)
+    if corrected:
+        return corrected
     try:
         args = await asyncio.to_thread(extract_manual_transaction_call, text)
     except Exception as e:
@@ -1702,6 +1767,19 @@ async def _try_log_manual_transaction(text: str, user_id: str):
         if tx["category"] == categorizer.UNCATEGORIZED
         else "_Synced to your Loamy dashboard_"
     )
+
+    currency_note = ""
+    if not has_explicit_currency(text):
+        amount_label = f"{tx['original_amount']:,.0f}"
+        other = "NGN" if tx["original_currency"] == "MUR" else "MUR"
+        _pending_currency_corrections[user_id] = {
+            "tx_id": tx["id"], "original_amount": tx["original_amount"],
+            "currency": tx["original_currency"], "amount_ngn": tx["amount_ngn"],
+            "category": tx["category"], "description": tx["description"],
+            "date": tx["date"], "logged_at": time.time(),
+        }
+        currency_note = f'\n_No currency given - if this was in {other}, reply "{amount_label} {other}" to update._'
+
     return (
         "\u270d\ufe0f *Expense Logged!*\n"
         f"• *Merchant*: {tx['description']}\n"
@@ -1710,6 +1788,7 @@ async def _try_log_manual_transaction(text: str, user_id: str):
         f"• *Date*: _{date_label}_\n"
         "\n"
         f"{footer}"
+        f"{currency_note}"
     )
 
 
@@ -3840,11 +3919,15 @@ def verify_password(password: str, hashed: str) -> bool:
 
 @app.get("/get-chats")
 async def get_chats(user_id: str = "default"):
-    """Get all chats for listing in sidebar, scoped to one user (Supabase)."""
+    """Sidebar chat list plus `history`: the user's unified, chronological
+    chat_history across WhatsApp and the web app."""
     try:
+        history_res = await asyncio.to_thread(database.get_chat_history, user_id, 200)
+        history = (history_res.get("data") or []) if history_res.get("status") == "success" else []
+
         res = database.get_chats(user_id)
         if res["status"] != "success":
-            return {"chats": [], "error": res["error"]}
+            return {"chats": [], "history": history, "error": res["error"]}
 
         chats = []
         for row in res["data"]:
@@ -3857,11 +3940,11 @@ async def get_chats(user_id: str = "default"):
                 "message_count": len(messages),
             })
         # Already ordered by updated_at desc in the query.
-        return {"chats": chats}
+        return {"chats": chats, "history": history}
 
     except Exception as e:
         print(f"Get chats error: {str(e)}")
-        return {"chats": [], "error": str(e)}
+        return {"chats": [], "history": [], "error": str(e)}
 
 
 @app.post("/create-chat")

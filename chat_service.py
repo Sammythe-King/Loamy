@@ -41,9 +41,40 @@ Rules:
   bank alerts. You may still list individual transactions as supporting detail.
 - Focus exclusively on cash flow, transactions, invoices, and expense tracking. Do not
   suggest or discuss savings goals, even if the user's data contains goal information.
+- CURRENCY DISAMBIGUATION: The user spends in both Naira (NGN, ₦) and Mauritian Rupees
+  (MUR, Rs). If they mention an amount with NO currency symbol, code, or word (e.g.
+  "spent 600 on fuel"), do not assume silently. Either ask "Was this 600 MUR (Rupees)
+  or 600 NGN (Naira)?" or state that you treated it as ₦ and that they can reply
+  "600 MUR" to correct it.
+- RECENT CONVERSATION covers every channel (WhatsApp and the web app). Treat it as one
+  continuous conversation: if the user logged something on WhatsApp, you know about it here.
 """
 
 from whatsapp import WHATSAPP_FORMAT_RULES as _WHATSAPP_FORMAT_RULES
+
+HISTORY_CONTEXT_LIMIT = 15
+
+
+def build_history_context(user_id: str, limit: int = HISTORY_CONTEXT_LIMIT) -> str:
+    """Last `limit` messages for the user across ALL channels, as prompt text.
+    Returns "" when there's no history (or the table isn't migrated yet)."""
+    res = database.get_chat_history(user_id, limit=limit)
+    if res["status"] != "success" or not res.get("data"):
+        return ""
+    lines = []
+    for row in res["data"]:
+        who = "User" if row.get("sender") == "user" else "Loamy"
+        via = "WhatsApp" if row.get("channel") == "whatsapp" else "App"
+        lines.append(f"[{via}] {who}: {(row.get('message') or '')[:800]}")
+    return "\n".join(lines)
+
+
+def record_chat_turn(user_id: str, user_message: str, reply: str,
+                     channel: str = "app", user_at: datetime = None) -> bool:
+    """Write a user message + assistant reply to the shared chat_history table.
+    Best-effort: returns False instead of raising if the write fails."""
+    res = database.add_chat_turn(user_id, user_message, reply, channel=channel, user_at=user_at)
+    return res["status"] == "success"
 
 
 def _format_context(ctx: dict) -> str:
@@ -145,16 +176,22 @@ def handle_chat_turn(user_id: str, message: str, chat_id: str = None, channel: s
         print(f"[chat_service] context fetch failed: {ctx_res['error']}")
         return "I'm having trouble reading your financial data right now. Please try again shortly."
     context_text = _format_context(ctx_res["data"])
+    history_text = build_history_context(user_id)
+    asked_at = datetime.utcnow()
 
-    # 2. Ask Gemini with persona + context + the user's question.
+    # 2. Ask Gemini with persona + context + cross-channel history + the question.
     try:
         persona = _ADVISOR_PERSONA + (_WHATSAPP_FORMAT_RULES if channel == "whatsapp" else "")
-        prompt = f"{persona}\n\n{context_text}\n\nUser question: {message}\n\nYour answer:"
+        history_block = (f"\n\n=== RECENT CONVERSATION (all channels, oldest first) ===\n{history_text}"
+                         if history_text else "")
+        prompt = f"{persona}\n\n{context_text}{history_block}\n\nUser question: {message}\n\nYour answer:"
         response = _model.generate_content(prompt)
         reply = (response.text or "").strip() or "I'm not sure how to answer that yet."
     except Exception as e:
         print(f"[chat_service] Gemini call failed: {e}")
         return "I'm having trouble thinking right now. Please try again in a moment."
+
+    record_chat_turn(user_id, message, reply, channel=channel, user_at=asked_at)
 
     # 3. Persist the turn onto a conversation thread (best-effort; never blocks).
     try:

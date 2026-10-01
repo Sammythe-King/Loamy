@@ -349,6 +349,20 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
 # ============================================
 # 4. Integration flow: message -> AI -> reply
 # ============================================
+def _record_whatsapp_turn(from_phone: str, user_message: str, reply: str, user_at) -> None:
+    """Write a WhatsApp exchange into the shared chat_history table under the
+    linked Loamy account (falls back to the phone number when unlinked), so the
+    web chat shows it and Gemini remembers it on every channel."""
+    import database
+    try:
+        linked = database.get_user_by_phone(from_phone)
+        user = linked.get("data") if linked.get("status") == "success" else None
+        user_id = (user or {}).get("user_id") or from_phone
+        database.add_chat_turn(user_id, user_message, reply, channel="whatsapp", user_at=user_at)
+    except Exception as e:
+        print(f"[WhatsApp] chat_history write failed: {e}")
+
+
 async def _process_and_reply(from_phone: str, body: str):
     """Hand the text to the injected AI advisor and text the answer back.
 
@@ -358,10 +372,13 @@ async def _process_and_reply(from_phone: str, body: str):
         print("[WhatsApp] No AI handler registered; dropping message.")
         return
 
+    from datetime import datetime
+    received_at = datetime.utcnow()
     try:
         reply = await _ai_handler(body, from_phone)
         reply = (reply or "").strip() or "I couldn't generate a response just now. Please try again."
         await send_whatsapp_message(from_phone, reply)
+        await asyncio.to_thread(_record_whatsapp_turn, from_phone, body, reply, received_at)
     except Exception as e:
         print(f"[WhatsApp] AI processing failed: {e}")
         await send_whatsapp_message(
@@ -401,6 +418,9 @@ async def _process_receipt_and_reply(from_phone: str, media_id: str, caption: st
         reply = await _receipt_handler(media["data"], media["mime_type"], from_phone)
         reply = (reply or "").strip() or "I saved your receipt. Check your dashboard for details."
         await send_whatsapp_message(from_phone, reply)
+        from datetime import datetime
+        user_note = "[Sent a receipt photo]" + (f" {caption}" if caption else "")
+        await asyncio.to_thread(_record_whatsapp_turn, from_phone, user_note, reply, datetime.utcnow())
     except Exception as e:
         print(f"[WhatsApp] Receipt processing failed: {e}")
         await send_whatsapp_message(

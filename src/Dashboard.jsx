@@ -609,47 +609,11 @@ const Dashboard = () => {
           )}
         </div>
 
-        <LedgerLogWidget userId={getSessionUserId()} />
-
       </div>
 
-      {/* Bank Activity + Needs Review — shown side by side so users can see a
-          transaction and immediately categorize it from the column beside it. */}
+      {/* Cash & Receipts Log | Needs Review | Bank Activity — three equal columns on one line. */}
       <div className="activity-review-row">
-        {/* Bank Activity */}
-        <div className="card accounts-card activity-col">
-          <div className="card-header">
-            <i className="fa-solid fa-building-columns" style={{ color: "#1976D2" }}></i>
-            <h3>Bank Activity</h3>
-          </div>
-          {bank_transactions.length > 0 ? (
-            <>
-              <p className="bank-activity-label">Your 10 most recent bank credits & debits</p>
-              <div className="transactions-list">
-                {bank_transactions.slice(0, 10).map((tx, index) => (
-                  <div key={tx.id || index} className="transaction-item">
-                    <div className="transaction-info">
-                      <span className="transaction-desc">{(tx.description || "Transaction").substring(0, 30)}</span>
-                      <span className="transaction-date">
-                        {formatDate(tx.date)}{tx.bank ? ` - ${tx.bank}` : ""}
-                      </span>
-                    </div>
-                    <span className={`transaction-amount ${tx.type === "credit" ? "green" : "red"}`}>
-                      {tx.type === "credit" ? "+" : "-"}{formatTransactionAmount(tx)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </>
-          ) : (
-            <div className="empty-state">
-              <p>No bank activity yet.</p>
-              <button onClick={() => handleNavigation("/gmail-connect")} className="action-btn">
-                Sync Gmail
-              </button>
-            </div>
-          )}
-        </div>
+        <LedgerLogWidget userId={getSessionUserId()} />
 
         {/* Needs Review */}
         {needs_review && needs_review.length > 0 ? (
@@ -701,6 +665,41 @@ const Dashboard = () => {
             </div>
           </div>
         )}
+
+        {/* Bank Activity */}
+        <div className="card accounts-card activity-col">
+          <div className="card-header">
+            <i className="fa-solid fa-building-columns" style={{ color: "#1976D2" }}></i>
+            <h3>Bank Activity</h3>
+          </div>
+          {bank_transactions.length > 0 ? (
+            <>
+              <p className="bank-activity-label">Your 10 most recent bank credits & debits</p>
+              <div className="transactions-list">
+                {bank_transactions.slice(0, 10).map((tx, index) => (
+                  <div key={tx.id || index} className="transaction-item">
+                    <div className="transaction-info">
+                      <span className="transaction-desc">{(tx.description || "Transaction").substring(0, 30)}</span>
+                      <span className="transaction-date">
+                        {formatDate(tx.date)}{tx.bank ? ` - ${tx.bank}` : ""}
+                      </span>
+                    </div>
+                    <span className={`transaction-amount ${tx.type === "credit" ? "green" : "red"}`}>
+                      {tx.type === "credit" ? "+" : "-"}{formatTransactionAmount(tx)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="empty-state">
+              <p>No bank activity yet.</p>
+              <button onClick={() => handleNavigation("/gmail-connect")} className="action-btn">
+                Sync Gmail
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Quick Actions */}
