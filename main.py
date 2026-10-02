@@ -2803,12 +2803,21 @@ async def get_dashboard_data(user_id: str = "default"):
         bank_transactions.sort(key=lambda x: (x.get('internal_date_ms', 0) or 0, x.get('date', '')), reverse=True)
         recent_bank_transactions = bank_transactions[:10]  # Top 10 most recent bank movements
         
-        # 5. Format expense breakdown for pie chart
+        # 5. Format expense breakdown for pie chart.
+        # Uncategorized spend still counts toward cash_out/total_expenses (it's
+        # real money leaving the account), but it's excluded from this
+        # category breakdown since it hasn't been assigned a real category
+        # yet. It shows up in the Review Queue instead.
         expense_breakdown = []
         colors = ['#2E7D32', '#D4A373', '#F4A261', '#1976D2', '#E63946', '#9C27B0', '#00BCD4', '#FF9800']
-        total_expenses = sum(expense_categories.values()) or 1
+        categorized_expenses = {
+            category: amount
+            for category, amount in expense_categories.items()
+            if category.strip().lower() != categorizer.UNCATEGORIZED.lower()
+        }
+        total_expenses = sum(categorized_expenses.values()) or 1
         
-        for i, (category, amount) in enumerate(sorted(expense_categories.items(), key=lambda x: x[1], reverse=True)):
+        for i, (category, amount) in enumerate(sorted(categorized_expenses.items(), key=lambda x: x[1], reverse=True)):
             expense_breakdown.append({
                 'name': category,
                 'value': round((amount / total_expenses) * 100, 1),
