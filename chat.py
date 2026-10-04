@@ -3,7 +3,7 @@ Chat History Management - Endpoints for saving and retrieving chat conversations
 """
 
 from fastapi import APIRouter, HTTPException
-import chromadb
+from vector_store import get_collection
 import os
 import json
 import secrets
@@ -14,14 +14,12 @@ import database  # Supabase data-access layer (now the source of truth for chats
 # Create router for chat endpoints
 router = APIRouter()
 
-# ChromaDB is kept ONLY for the legacy one-time migration endpoints below
-# (migrate-history reads old goals from the vault). All live chat CRUD now
-# reads/writes Supabase via database.py.
-db_path = os.path.join(os.path.dirname(__file__), "..", "fintech_ai_vault_hidden")
-client = chromadb.PersistentClient(path=db_path)
-chats_collection = client.get_or_create_collection(name="user_chats")
-transactions_collection = client.get_or_create_collection(name="user_transactions")
-goals_collection = client.get_or_create_collection(name="user_goals")
+# Chroma-compatible collections backed by Supabase pgvector (vector_store.py).
+# Used only by the legacy migration endpoints below; live chat CRUD goes
+# through database.py.
+chats_collection = get_collection("user_chats")
+transactions_collection = get_collection("user_transactions")
+goals_collection = get_collection("user_goals")
 
 
 def generate_chat_title(first_message):

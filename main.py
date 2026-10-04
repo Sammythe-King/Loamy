@@ -1,7 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 import google.generativeai as genai
-import chromadb
 import json
 import os
 import re
@@ -26,18 +25,14 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Names below (scheduler, _warm_vector_store, ...) are defined further down
-    # in this module; they resolve at call time, after the module has loaded.
+    # The scheduler helpers are defined further down in this module; they
+    # resolve at call time, after the module has loaded. No model warmup is
+    # needed anymore: embeddings are a Gemini API call, vectors live in Supabase.
     _start_scheduler()
-    # Fire-and-forget: the ONNX embedding model is warmed in a worker thread so
-    # Uvicorn binds the port and serves traffic immediately on Render cold starts.
-    warmup_task = asyncio.create_task(asyncio.to_thread(_warm_vector_store))
     try:
         yield
     finally:
         _stop_scheduler()
-        if not warmup_task.done():
-            warmup_task.cancel()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -137,33 +132,11 @@ async def health():
 async def root():
     return {"status": "success", "data": {"service": "loamy-backend", "ok": True}, "error": None}
 
-# --- FIX: MOVE THE VAULT OUTSIDE THE PROJECT FOLDER ---
-# By using ../ we save the database one folder UP, so Live Server won't see it and refresh your page!
-db_path = os.path.join(os.path.dirname(__file__), "..", "fintech_ai_vault_hidden")
-client = chromadb.PersistentClient(path=db_path)
-
-# One shared embedding function for every collection: the ONNX session is
-# loaded once (not once per collection), which keeps memory low on Render's
-# free tier and lets a single warmup call prime all collections. Construction
-# is lazy - the all-MiniLM-L6-v2 weights are only downloaded/loaded on first call.
-try:
-    from chromadb.utils import embedding_functions as _chroma_ef
-    _shared_embedding_fn = _chroma_ef.DefaultEmbeddingFunction()
-except Exception as _ef_err:
-    print(f"[VectorStore] Shared embedding function unavailable, using per-collection default: {_ef_err}")
-    _shared_embedding_fn = None
-
-
-def _get_collection(name: str):
-    if _shared_embedding_fn is not None:
-        try:
-            return client.get_or_create_collection(name=name, embedding_function=_shared_embedding_fn)
-        except Exception as e:
-            # A persisted collection with a conflicting embedding config must
-            # still open, so fall back to Chroma's stored default.
-            print(f"[VectorStore] Collection '{name}' rejected shared embedding fn, using default: {e}")
-    return client.get_or_create_collection(name=name)
-
+# Vector storage now lives in Supabase pgvector (see vector_store.py and
+# scripts/sql/004_vector_embeddings.sql). Each name below is a Chroma-compatible
+# collection object, so every existing .get/.add/.update/.delete/.query call
+# works unchanged - but nothing is loaded into this process's RAM.
+from vector_store import get_collection as _get_collection, health as _vector_store_health
 
 collection = _get_collection("user_transactions")
 
@@ -180,101 +153,6 @@ vendor_memory_collection = _get_collection("vendor_memory")  # Learned vendor ->
 notifications_collection = _get_collection("notifications")  # In-app notifications (e.g. daily 5pm invoice reminder)
 sync_state_collection = _get_collection("sync_state")  # Delta-sync bookmarks: last_synced_timestamp per user
 gmail_credentials_collection = _get_collection("gmail_credentials")  # Per-user Gmail refresh tokens for server-side auto-sync
-
-
-# ============================================
-# VECTOR STORE WARMUP (ONNX embedding model)
-# ============================================
-# Root cause of the cold-start "CORS" errors: Chroma downloads and loads the
-# all-MiniLM-L6-v2 ONNX weights lazily on the first add/query, i.e. INSIDE a
-# request such as /gmail/fetch-emails. That synchronous work blocked the event
-# loop for seconds, the browser connection timed out (net::ERR_FAILED) and it
-# was misreported as CORS. The lifespan handler now runs _warm_vector_store in a
-# worker thread at boot, and vector-dependent routes wait (asynchronously) for it.
-VECTOR_WARMUP_ATTEMPTS = 3
-VECTOR_WARMUP_RETRY_DELAY_SECONDS = 10
-VECTOR_REQUEST_WAIT_SECONDS = 20
-VECTOR_RETRY_AFTER_SECONDS = 5
-
-_vector_ready = threading.Event()
-_vector_state = {"status": "warming", "error": None, "seconds": None}
-
-
-def _warm_vector_store():
-    """Download + load the embedding model once. Never raises."""
-    started = time.monotonic()
-    for attempt in range(1, VECTOR_WARMUP_ATTEMPTS + 1):
-        try:
-            if _shared_embedding_fn is not None:
-                embed = _shared_embedding_fn
-            else:
-                embed = getattr(collection, "_embedding_function", None)
-            if embed is not None:
-                embed(["warmup"])
-            elapsed = round(time.monotonic() - started, 2)
-            _vector_state.update(status="ready", error=None, seconds=elapsed)
-            _vector_ready.set()
-            print(f"[VectorStore] Embedding model ready in {elapsed}s (attempt {attempt}).")
-            return
-        except Exception as e:
-            _vector_state["error"] = f"{type(e).__name__}: {e}"
-            print(f"[VectorStore] Warmup attempt {attempt}/{VECTOR_WARMUP_ATTEMPTS} failed: {_vector_state['error']}")
-            if attempt < VECTOR_WARMUP_ATTEMPTS:
-                time.sleep(VECTOR_WARMUP_RETRY_DELAY_SECONDS * attempt)
-
-    # Degraded: stop gating requests so the app behaves as before (Chroma will
-    # retry loading lazily) instead of returning 503 forever.
-    _vector_state["status"] = "degraded"
-    _vector_ready.set()
-    print("[VectorStore] Warmup gave up; continuing in degraded mode (lazy model load).")
-
-
-async def wait_for_vector_store(timeout: float = VECTOR_REQUEST_WAIT_SECONDS) -> bool:
-    """Poll without blocking the event loop or tying up a threadpool worker."""
-    deadline = time.monotonic() + timeout
-    while not _vector_ready.is_set():
-        if time.monotonic() >= deadline:
-            return False
-        await asyncio.sleep(0.25)
-    return True
-
-
-_VECTOR_EXACT_PATHS = {
-    "/chat",
-    "/get-dashboard-data",
-    "/create-invoice",
-    "/categorize-transaction",
-    "/add-bill",
-    "/rename-goal",
-    "/assign-to-goal",
-    "/sync-gmail-data",
-}
-_VECTOR_PATH_PREFIXES = (
-    "/review-queue",
-    "/gmail/fetch-emails",
-    "/gmail/server-sync",
-    "/mark-invoice-paid/",
-)
-
-
-def _is_vector_path(path: str) -> bool:
-    return path in _VECTOR_EXACT_PATHS or path.startswith(_VECTOR_PATH_PREFIXES)
-
-
-@app.middleware("http")
-async def vector_store_readiness_gate(request: Request, call_next):
-    if (
-        request.method != "OPTIONS"
-        and not _vector_ready.is_set()
-        and _is_vector_path(request.url.path)
-        and not await wait_for_vector_store()
-    ):
-        return JSONResponse(
-            status_code=503,
-            content={"status": "error", "data": None, "error": "vector_store_warming_up"},
-            headers={"Retry-After": str(VECTOR_RETRY_AFTER_SECONDS), **_cors_headers_for(request)},
-        )
-    return await call_next(request)
 
 
 # ============================================
@@ -311,7 +189,7 @@ async def options_handler(full_path: str):
 
 @app.get("/health/vector-store")
 async def vector_store_health():
-    return {"status": "success", "data": dict(_vector_state), "error": None}
+    return {"status": "success", "data": await asyncio.to_thread(_vector_store_health), "error": None}
 
 
 # ============================================
@@ -390,9 +268,6 @@ GMAIL_AUTOSYNC_INTERVAL_MINUTES = 10
 
 def _gmail_autosync_job():
     """Wrapper the scheduler calls every GMAIL_AUTOSYNC_INTERVAL_MINUTES."""
-    if not _vector_ready.wait(timeout=120):
-        print("[Scheduler] Vector store still warming up; skipping this Gmail auto-sync run.")
-        return
     print("[Scheduler] Running periodic Gmail auto-sync for all linked users...")
     try:
         # maybe_autosync_all_users is defined later in this module, but by the
@@ -2005,16 +1880,7 @@ async def _whatsapp_ai_handler(text: str, from_phone: str) -> str:
     return result.get("reply", "")
 
 
-VECTOR_WARMING_REPLY = "I'm just waking up after a restart. Please resend that in a few seconds."
-
-
-async def _vector_guarded_ai_handler(text: str, from_phone: str) -> str:
-    if not await wait_for_vector_store():
-        return VECTOR_WARMING_REPLY
-    return await _whatsapp_ai_handler(text, from_phone)
-
-
-set_ai_handler(_vector_guarded_ai_handler)
+set_ai_handler(_whatsapp_ai_handler)
 
 
 async def _whatsapp_receipt_handler(file_data: bytes, mime_type: str, from_phone: str) -> str:
@@ -2071,13 +1937,7 @@ async def _whatsapp_receipt_handler(file_data: bytes, mime_type: str, from_phone
     )
 
 
-async def _vector_guarded_receipt_handler(file_data: bytes, mime_type: str, from_phone: str) -> str:
-    if not await wait_for_vector_store():
-        return VECTOR_WARMING_REPLY
-    return await _whatsapp_receipt_handler(file_data, mime_type, from_phone)
-
-
-set_receipt_handler(_vector_guarded_receipt_handler)
+set_receipt_handler(_whatsapp_receipt_handler)
 
 
 @app.get("/get-goals")
