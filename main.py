@@ -1515,11 +1515,15 @@ async def chat_with_history(query: dict):
         if channel == "whatsapp":
             advisor_prompt += "\n" + WHATSAPP_FORMAT_RULES
 
-        response = model.generate_content(advisor_prompt)
-        reply_text = response.text
+        # Function calling + conversation state: a "yes" after Loamy offers to
+        # categorize triggers get_uncategorized_transactions instead of a re-summary.
+        reply_text = await asyncio.to_thread(
+            chat_tools.generate_reply, model, advisor_prompt, user_id, user_msg
+        )
 
         # --- Handle CREATE_INVOICE marker (AI-driven invoice creation) ---
         # The AI emits a line like: * CREATE_INVOICE: Mr James | 15000 | 2026-08-05 | groceries
+
         invoice_created = False
         try:
             import re
@@ -1595,6 +1599,7 @@ async def chat_with_history(query: dict):
 import database  # data-access layer; the only module that talks to Supabase
 import categorizer
 import chat_service  # builds the combined Gmail + ledger snapshot for all channels
+import chat_tools  # Gemini function calling + conversation state for the advisor
 
 
 CURRENCY_SYMBOLS = {"NGN": "\u20a6", "USD": "$", "EUR": "\u20ac", "GBP": "\u00a3", "INR": "\u20b9"}
