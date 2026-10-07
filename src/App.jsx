@@ -9,6 +9,7 @@ import GmailConnectPage from "./GmailConnectPage.jsx";
 import InvoicesPage from "./InvoicesPage.jsx";
 import ReviewQueuePage from "./ReviewQueuePage.jsx";
 import OnboardingWizard from "./OnboardingWizard.jsx";
+import AccountDetail from "./pages/AccountDetail.jsx";
 
 // Global activity-driven sync. Wrapping the whole app (rather than a single
 // page) means ANY interaction anywhere can trigger an automatic bank sync.
@@ -35,6 +36,7 @@ export default function App() {
       <Route path="/gmail-connect" element={<GmailConnectPage />} />
       <Route path="/invoices" element={<InvoicesPage />} />
       <Route path="/review-queue" element={<ReviewQueuePage />} />
+      <Route path="/accounts/:accountId" element={<AccountDetail />} />
 
       {/* Aliases for convenience */}
       <Route path="/spending" element={<Dashboard />} />
