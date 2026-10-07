@@ -43,6 +43,12 @@ from models import (
     gmail_credentials_collection,
     GOOGLE_CLIENT_ID,
     GOOGLE_CLIENT_SECRET,
+    ConnectBankRequest,
+)
+from email_parser import (
+    SUPPORTED_BANKS,
+    get_connected_bank_accounts,
+    email_belongs_to_bank,
 )
 from business_logic import (
     get_exchange_rate,
@@ -2849,3 +2855,198 @@ async def get_bank_transactions(user_id: str):
 
 
 
+
+
+# ==========================================
+# BANK CONNECTION MANAGEMENT (v1)
+# Connected banks are stored as `accounts` rows tagged
+# metadata.kind = "connected_bank", so no schema migration is needed and the
+# legacy /get-accounts endpoint keeps working unchanged.
+# ==========================================
+
+def _connected_account_view(row):
+    meta = row.get("metadata") or {}
+    slug = meta.get("bank_slug")
+    bank = SUPPORTED_BANKS.get(slug, {})
+    return {
+        "id": row.get("id"),
+        "bank_slug": slug,
+        "bank_name": bank.get("name", row.get("account_name")),
+        "logo": bank.get("logo"),
+        "nickname": meta.get("nickname") or "",
+        "account_tail": meta.get("account_tail") or "",
+        "currency": row.get("currency") or "NGN",
+        "connected_at": meta.get("connected_at") or row.get("created_at"),
+        "status": meta.get("status", "active"),
+    }
+
+
+def _alert_sort_key(email):
+    return (email.get("internal_date_ms") or 0, email.get("date") or "")
+
+
+def _summarize_bank_emails(emails):
+    credits = sum(float(e.get("amount") or 0) for e in emails if e.get("transaction_type") == "credit")
+    debits = sum(float(e.get("amount") or 0) for e in emails if e.get("transaction_type") == "debit")
+    latest_balance = None
+    last_activity = None
+    for email in sorted(emails, key=_alert_sort_key, reverse=True):
+        last_activity = last_activity or email.get("date")
+        if email.get("balance") is not None:
+            latest_balance = email.get("balance")
+            break
+    return {
+        "balance": latest_balance,
+        "transaction_count": len(emails),
+        "total_credits": round(credits, 2),
+        "total_debits": round(debits, 2),
+        "net_flow": round(credits - debits, 2),
+        "last_activity": last_activity,
+    }
+
+
+@router.get("/api/v1/banks/available")
+async def list_available_banks():
+    banks = [
+        {"slug": slug, "name": bank["name"], "logo": bank["logo"], "senders": bank["senders"]}
+        for slug, bank in SUPPORTED_BANKS.items()
+    ]
+    return {"status": "success", "data": {"banks": banks}, "error": None}
+
+
+@router.post("/api/v1/accounts/connect")
+async def connect_bank_account(payload: ConnectBankRequest):
+    if not _is_real_user_id(payload.user_id):
+        raise HTTPException(status_code=400, detail="A valid user_id is required")
+    slug = payload.bank_slug.strip().lower()
+    bank = SUPPORTED_BANKS.get(slug)
+    if not bank:
+        raise HTTPException(status_code=400, detail=f"Unsupported bank '{payload.bank_slug}'")
+
+    # Deterministic id: reconnecting the same bank/account upserts instead of duplicating.
+    digest = hashlib.sha256(f"{payload.user_id}:{slug}:{payload.account_tail}".encode()).hexdigest()[:12]
+    account_id = f"bank_{slug}_{digest}"
+    nickname = payload.nickname.strip() or bank["name"]
+
+    saved = database.add_account(
+        user_id=payload.user_id, account_id=account_id,
+        account_name=nickname, currency="NGN",
+        document=f"Connected bank: {bank['name']}" + (f" ****{payload.account_tail}" if payload.account_tail else ""),
+        kind="connected_bank", bank_slug=slug, account_tail=payload.account_tail,
+        nickname=nickname, type="Bank", status="active",
+        connected_at=datetime.utcnow().isoformat() + "Z",
+    )
+    if saved["status"] != "success":
+        raise HTTPException(status_code=500, detail=saved["error"])
+
+    # Pull this bank's alerts now rather than waiting for the next scheduled sync.
+    try:
+        spawn_background_sync(payload.user_id, force=True)
+    except Exception as e:
+        print(f"[Bank Connect] Background sync not started for {payload.user_id}: {e}")
+
+    row = (saved["data"] or [{}])[0] if isinstance(saved["data"], list) else {}
+    account = _connected_account_view(row) if row else {
+        "id": account_id, "bank_slug": slug, "bank_name": bank["name"], "logo": bank["logo"],
+        "nickname": nickname, "account_tail": payload.account_tail, "currency": "NGN", "status": "active",
+    }
+    return {"status": "success", "data": {"account": account}, "error": None}
+
+
+@router.get("/api/v1/accounts")
+async def list_connected_accounts(user_id: str = "default"):
+    if not _is_real_user_id(user_id):
+        raise HTTPException(status_code=400, detail="A valid user_id is required")
+    rows = get_connected_bank_accounts(user_id)
+    emails = load_user_emails(user_id) if rows else []
+
+    accounts = []
+    for row in rows:
+        view = _connected_account_view(row)
+        matched = [e for e in emails if email_belongs_to_bank(e, view["bank_slug"], view["account_tail"])]
+        view["summary"] = _summarize_bank_emails(matched)
+        accounts.append(view)
+
+    total_balance = sum(float(a["summary"]["balance"] or 0) for a in accounts)
+    return {
+        "status": "success",
+        "data": {"accounts": accounts, "total_balance": round(total_balance, 2), "count": len(accounts)},
+        "error": None,
+    }
+
+
+@router.get("/api/v1/accounts/{account_id}/transactions")
+async def get_connected_account_transactions(
+    account_id: str,
+    user_id: str = "default",
+    type: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    limit: int = 100,
+):
+    if not _is_real_user_id(user_id):
+        raise HTTPException(status_code=400, detail="A valid user_id is required")
+    row = next((r for r in get_connected_bank_accounts(user_id) if r.get("id") == account_id), None)
+    if not row:
+        raise HTTPException(status_code=404, detail="Connected account not found")
+
+    view = _connected_account_view(row)
+    tx_type = type.strip().lower()
+    if tx_type and tx_type not in ("debit", "credit"):
+        raise HTTPException(status_code=400, detail="type must be 'debit' or 'credit'")
+    limit = max(1, min(limit, 500))
+
+    matched = [e for e in load_user_emails(user_id) if email_belongs_to_bank(e, view["bank_slug"], view["account_tail"])]
+    filtered = [
+        e for e in matched
+        if (not tx_type or e.get("transaction_type") == tx_type)
+        and (not start_date or (e.get("date") or "") >= start_date)
+        and (not end_date or (e.get("date") or "") <= end_date)
+    ]
+    filtered.sort(key=_alert_sort_key, reverse=True)
+
+    merchants = {}
+    monthly = {}
+    for email in filtered:
+        amount = float(email.get("amount") or 0)
+        month = (email.get("date") or "")[:7] or "unknown"
+        bucket = monthly.setdefault(month, {"month": month, "credits": 0.0, "debits": 0.0})
+        if email.get("transaction_type") == "credit":
+            bucket["credits"] += amount
+        elif email.get("transaction_type") == "debit":
+            bucket["debits"] += amount
+            merchant = email.get("narration") or "Unknown"
+            stats = merchants.setdefault(merchant, {"merchant": merchant, "total": 0.0, "count": 0})
+            stats["total"] += amount
+            stats["count"] += 1
+
+    transactions = [
+        {
+            "id": e.get("id"),
+            "date": e.get("date"),
+            "amount": e.get("amount"),
+            "type": e.get("transaction_type"),
+            "merchant": e.get("narration"),
+            "balance_after": e.get("balance"),
+            "account_tail": e.get("account_tail") or view["account_tail"],
+            "currency": e.get("currency") or "NGN",
+            "category": normalize_category(e.get("category")),
+        }
+        for e in filtered[:limit]
+    ]
+
+    analytics = _summarize_bank_emails(filtered)
+    analytics["top_merchants"] = [
+        {**m, "total": round(m["total"], 2)}
+        for m in sorted(merchants.values(), key=lambda m: m["total"], reverse=True)[:5]
+    ]
+    analytics["monthly"] = [
+        {**b, "credits": round(b["credits"], 2), "debits": round(b["debits"], 2)}
+        for b in sorted(monthly.values(), key=lambda b: b["month"])
+    ]
+
+    return {
+        "status": "success",
+        "data": {"account": view, "transactions": transactions, "analytics": analytics},
+        "error": None,
+    }

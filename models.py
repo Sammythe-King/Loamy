@@ -67,3 +67,16 @@ if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
           "Add them to your .env for Google Sign-In and Gmail sync to work.")
 
 
+# ==========================================
+# BANK CONNECTION SCHEMAS
+# ==========================================
+from pydantic import BaseModel, Field
+
+
+class ConnectBankRequest(BaseModel):
+    user_id: str = Field(..., min_length=1, max_length=128)
+    bank_slug: str = Field(..., min_length=1, max_length=32)
+    account_tail: str = Field("", max_length=4, pattern=r"^[0-9]{0,4}$")
+    nickname: str = Field("", max_length=80)
+
+

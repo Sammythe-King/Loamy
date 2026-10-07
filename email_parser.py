@@ -664,9 +664,20 @@ async def _fetch_gmail_emails_core(data: dict):
         # messages newer than the bookmark. With a recent bookmark this is a tiny
         # result set (often zero), which is what keeps the sync fast.
         after_clause = f"after:{after_epoch}"
-        search_queries = [
+        keyword_sweep = f"{after_clause} (debit OR credit OR debited OR credited OR transaction OR transfer OR alert OR payment OR receipt OR invoice OR account)"
+
+        # Users who connected specific banks get one sender-scoped query and
+        # only those banks' alerts are parsed. Users who haven't connected any
+        # bank keep the original broad sweep below.
+        connected_slugs = get_connected_bank_slugs(user_id)
+        allowed_bank_slugs = set(connected_slugs) if connected_slugs else None
+        sender_filter = build_gmail_sender_query(connected_slugs)
+        if sender_filter:
+            print(f"INFO: [Bank Registry] {user_id} connected banks: {connected_slugs} -> {sender_filter}")
+
+        search_queries = [keyword_sweep, f"{after_clause} {sender_filter}"] if sender_filter else [
             # Targeted financial keyword sweep, delta-filtered.
-            f"{after_clause} (debit OR credit OR debited OR credited OR transaction OR transfer OR alert OR payment OR receipt OR invoice OR account)",
+            keyword_sweep,
 
             # Direct bank sender searches (high confidence), delta-filtered.
             f"{after_clause} from:wemaalert@wemabank.com",
@@ -726,7 +737,7 @@ async def _fetch_gmail_emails_core(data: dict):
                     except (TypeError, ValueError):
                         pass
 
-                    parsed_email = parse_gmail_message_full(msg_data)
+                    parsed_email = parse_gmail_message_full(msg_data, allowed_bank_slugs)
                     if parsed_email and parsed_email['id'] not in [e.get('id') for e in all_messages]:
                         all_messages.append(parsed_email)
         
@@ -828,8 +839,11 @@ def get_email_body(payload):
 
 
 
-def parse_gmail_message_full(msg_data):
-    """Parse Gmail message with FULL body content for amount extraction"""
+def parse_gmail_message_full(msg_data, allowed_bank_slugs=None):
+    """Parse Gmail message with FULL body content for amount extraction.
+
+    When `allowed_bank_slugs` is given, bank alerts from banks outside that
+    set are skipped so only the user's connected banks are parsed."""
     try:
         headers = msg_data.get("payload", {}).get("headers", [])
 
@@ -911,7 +925,25 @@ def parse_gmail_message_full(msg_data):
         
         # Extract financial data based on type
         if is_bank:
+            if allowed_bank_slugs is not None and resolve_bank_slug(sender_email) not in allowed_bank_slugs:
+                return None
+
             bank_data = extract_bank_alert_data(body, subject, sender_email)
+            bank_slug, registry_data = parse_with_registry(body, sender_email)
+            account_tail = ""
+            if registry_data:
+                if registry_data.get("amount") is not None:
+                    bank_data["amount"] = registry_data["amount"]
+                    bank_data["needs_review"] = False
+                if registry_data.get("type"):
+                    bank_data["transaction_type"] = registry_data["type"]
+                if registry_data.get("balance") is not None:
+                    bank_data["balance"] = registry_data["balance"]
+                if registry_data.get("merchant"):
+                    bank_data["narration"] = registry_data["merchant"]
+                account_tail = registry_data.get("account_tail") or ""
+            if bank_slug and not detected_bank:
+                detected_bank = SUPPORTED_BANKS[bank_slug]["name"]
             amount = bank_data.get("amount")
             
             # === STEP B: TRUE-UP CHECK ===
@@ -952,6 +984,8 @@ def parse_gmail_message_full(msg_data):
                 "category": "Banking",
                 "is_bank_alert": True,
                 "bank_name": detected_bank or bank_data.get("bank_name"),
+                "bank_slug": bank_slug,
+                "account_tail": account_tail,
                 "confidence": classification["confidence"],
                 "needs_review": bank_data.get("needs_review", False),
                 "true_up": true_up_info  # Will contain matched foreign transaction info if found
@@ -1510,6 +1544,318 @@ def extract_bank_alert_data(body, subject, sender_email):
         result["needs_review"] = True
     
     return result
+
+
+# ============================================
+# MULTI-BANK PARSER REGISTRY
+# ============================================
+# SUPPORTED_BANKS is the single source of truth for which banks a user can
+# connect, which Gmail senders belong to each bank, and which parser handles
+# their alerts. Each parser takes the plain-text email body and returns:
+#   {"amount": float|None, "type": "debit"|"credit"|None, "account_tail": str,
+#    "merchant": str, "date": str, "currency": "NGN", "balance": float|None}
+# Fields a parser can't find stay None/"" so the caller can fall back to the
+# generic extract_bank_alert_data() result instead of overwriting good data.
+
+def _logo_for(domain):
+    return f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
+
+
+SUPPORTED_BANKS = {
+    "wema": {
+        "name": "Wema Bank",
+        "senders": ["wemaalert@wemabank.com", "wemabank.com", "alat.ng"],
+        "logo": _logo_for("wemabank.com"),
+        "aliases": ["wema", "alat"],
+    },
+    "firstbank": {
+        "name": "First Bank",
+        "senders": ["FirstAlert@firstbanknigeria.com", "firstbanknigeria.com"],
+        "logo": _logo_for("firstbanknigeria.com"),
+        "aliases": ["firstbank", "first bank", "firstalert"],
+    },
+    "gtbank": {
+        "name": "GTBank",
+        "senders": ["gtbank.com", "gtbplc.com"],
+        "logo": _logo_for("gtbank.com"),
+        "aliases": ["gtbank", "gtb", "guaranty"],
+    },
+    "zenith": {
+        "name": "Zenith Bank",
+        "senders": ["zenithbank.com"],
+        "logo": _logo_for("zenithbank.com"),
+        "aliases": ["zenith"],
+    },
+    "access": {
+        "name": "Access Bank",
+        "senders": ["accessbankplc.com"],
+        "logo": _logo_for("accessbankplc.com"),
+        "aliases": ["access bank", "accessbank"],
+    },
+    "opay": {
+        "name": "OPay",
+        "senders": ["opay.com", "opay-inc.com"],
+        "logo": _logo_for("opayweb.com"),
+        "aliases": ["opay"],
+    },
+}
+
+_AMOUNT_RE = r'([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)'
+
+_ALERT_DATE_FORMATS = (
+    "%d-%m-%Y %H:%M:%S", "%d/%m/%Y %H:%M:%S", "%d-%m-%Y %H:%M", "%d/%m/%Y %H:%M",
+    "%d-%b-%Y %H:%M:%S", "%d-%b-%Y %H:%M", "%d %b %Y %H:%M", "%Y-%m-%d %H:%M:%S",
+    "%d-%m-%Y", "%d/%m/%Y", "%d-%b-%Y", "%d %b %Y", "%Y-%m-%d",
+)
+
+
+def _to_float(value):
+    if not value:
+        return None
+    try:
+        return float(str(value).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _extract_labeled_fields(body, labels):
+    """Slice `body` into {field: value} using label regexes as delimiters.
+
+    Bank alert bodies arrive either line-broken (text/plain) or collapsed onto
+    one line (HTML stripped by get_email_body), so values are bounded by the
+    NEXT label found in the text rather than by newlines alone."""
+    hits = []
+    for field, pattern in labels.items():
+        match = re.search(pattern, body, re.IGNORECASE)
+        if match:
+            hits.append((match.start(), match.end(), field))
+    hits.sort()
+    fields = {}
+    for i, (_, end, field) in enumerate(hits):
+        stop = hits[i + 1][0] if i + 1 < len(hits) else len(body)
+        value = body[end:stop].split("\n")[0] if field != "balance" else body[end:stop]
+        fields[field] = value.strip(" \t\r\n:-|")
+    return fields
+
+
+def _account_tail(raw):
+    if not raw:
+        return ""
+    digit_runs = re.findall(r'\d+', raw)
+    return digit_runs[-1][-4:] if digit_runs else ""
+
+
+def _normalize_alert_date(raw):
+    if not raw:
+        return ""
+    cleaned = re.sub(r'\s+', ' ', raw).strip()[:25]
+    for candidate in (cleaned, cleaned[:19], cleaned[:16], cleaned[:11], cleaned[:10]):
+        for fmt in _ALERT_DATE_FORMATS:
+            try:
+                return datetime.strptime(candidate.strip(), fmt).isoformat()
+            except ValueError:
+                continue
+    return cleaned
+
+
+def _detect_tx_type(type_label, body):
+    label = (type_label or "").lower()
+    if "debit" in label or label.strip() == "dr":
+        return "debit"
+    if "credit" in label or label.strip() == "cr":
+        return "credit"
+    lowered = body.lower()
+    debit_at = lowered.find("debit")
+    credit_at = lowered.find("credit")
+    if debit_at == -1 and credit_at == -1:
+        return None
+    if credit_at == -1 or (debit_at != -1 and debit_at < credit_at):
+        return "debit"
+    return "credit"
+
+
+def _clean_merchant(raw):
+    if not raw:
+        return ""
+    merchant = re.sub(r'^(?:\s*(?:POS|WEB)\s*[/\\\-:|]?\s*)+', '', raw, flags=re.IGNORECASE)
+    merchant = re.sub(r'\b[0-9]{10,}\b', '', merchant)
+    return re.sub(r'\s+', ' ', merchant).strip(" /-|")[:100]
+
+
+_WEMA_LABELS = {
+    "account_number": r'Account\s*Number\s*:',
+    "account_name": r'Account\s*Name\s*:',
+    "amount": r'Transaction\s*Amount\s*:',
+    "tx_type": r'Transaction\s*Type\s*:',
+    "description": r'Description\s*:',
+    "location": r'Transaction\s*Location\s*:',
+    "reference": r'(?:Transaction\s*Reference|Reference|Session\s*ID)\s*:',
+    "datetime": r'Transaction\s*Date\s*(?:&amp;|&|and)\s*Time\s*:',
+    "value_date": r'Value\s*Date\s*:',
+    "balance": r'Current\s*Balance\s*as\s*at',
+    "available": r'Available\s*Balance\s*:',
+}
+
+
+def parse_wema_alert(email_body: str) -> dict:
+    fields = _extract_labeled_fields(email_body or "", _WEMA_LABELS)
+
+    amount_value = fields.get("amount", "")
+    amount_match = re.search(_AMOUNT_RE + r'\s*NGN', amount_value, re.IGNORECASE) \
+        or re.search(_AMOUNT_RE, amount_value)
+
+    # "Current Balance as at 14-05-2026 13:45:40 : 307,775.68 NGN" - the label
+    # carries a timestamp full of colons, so take the figure tagged with NGN.
+    balance_value = fields.get("balance", "")
+    balance_match = re.search(r':\s*' + _AMOUNT_RE + r'\s*NGN', balance_value, re.IGNORECASE) \
+        or re.search(_AMOUNT_RE + r'\s*NGN', balance_value, re.IGNORECASE)
+
+    return {
+        "amount": _to_float(amount_match.group(1)) if amount_match else None,
+        "type": _detect_tx_type(fields.get("tx_type"), email_body or ""),
+        "account_tail": _account_tail(fields.get("account_number")),
+        "merchant": _clean_merchant(fields.get("description")),
+        "date": _normalize_alert_date(fields.get("datetime")),
+        "currency": "NGN",
+        "balance": _to_float(balance_match.group(1)) if balance_match else None,
+    }
+
+
+_FIRSTBANK_LABELS = {
+    "account_number": r'(?:Account\s*Number|Acct\s*No\.?|Account\s*No\.?)\s*:',
+    "account_name": r'Account\s*Name\s*:',
+    "amount": r'(?:Transaction\s*Amount|Amount|Amt)\s*:',
+    "tx_type": r'(?:Transaction\s*Type|Txn\s*Type)\s*:',
+    "description": r'(?:Narration|Description|Remarks)\s*:',
+    "datetime": r'(?:Transaction\s*Date|Date\s*(?:&amp;|&|and)?\s*Time|Date)\s*:',
+    "reference": r'(?:Reference|Ref\.?|Session\s*ID)\s*:',
+    "balance": r'(?:Cleared\s*Balance|Available\s*Balance|Current\s*Balance|Balance)\s*:',
+}
+
+
+def parse_firstbank_alert(email_body: str) -> dict:
+    fields = _extract_labeled_fields(email_body or "", _FIRSTBANK_LABELS)
+    amount_match = re.search(_AMOUNT_RE, fields.get("amount", "").replace("NGN", " "))
+    balance_match = re.search(_AMOUNT_RE, fields.get("balance", "").replace("NGN", " "))
+    return {
+        "amount": _to_float(amount_match.group(1)) if amount_match else None,
+        "type": _detect_tx_type(fields.get("tx_type"), email_body or ""),
+        "account_tail": _account_tail(fields.get("account_number")),
+        "merchant": _clean_merchant(fields.get("description")),
+        "date": _normalize_alert_date(fields.get("datetime")),
+        "currency": "NGN",
+        "balance": _to_float(balance_match.group(1)) if balance_match else None,
+    }
+
+
+def _generic_registry_parser(email_body: str) -> dict:
+    """Standard-shape adapter over the deterministic generic extractor, used
+    for banks without a dedicated template parser yet."""
+    data = extract_bank_alert_data(email_body or "", "", "")
+    tail_match = re.search(r'(?:Account|Acct)[^:\n]{0,20}:\s*([0-9*Xx]{4,})', email_body or "", re.IGNORECASE)
+    return {
+        "amount": data.get("amount"),
+        "type": data.get("transaction_type"),
+        "account_tail": _account_tail(tail_match.group(1)) if tail_match else "",
+        "merchant": _clean_merchant(data.get("narration")),
+        "date": "",
+        "currency": "NGN",
+        "balance": data.get("balance"),
+    }
+
+
+BANK_PARSERS = {
+    "wema": parse_wema_alert,
+    "firstbank": parse_firstbank_alert,
+    "gtbank": _generic_registry_parser,
+    "zenith": _generic_registry_parser,
+    "access": _generic_registry_parser,
+    "opay": _generic_registry_parser,
+}
+
+
+def resolve_bank_slug(sender_email):
+    """Map a sender address to its SUPPORTED_BANKS slug, or None."""
+    sender_lower = (sender_email or "").lower()
+    if not sender_lower:
+        return None
+    for slug, bank in SUPPORTED_BANKS.items():
+        for sender in bank["senders"]:
+            sender = sender.lower()
+            if sender_lower == sender or sender_lower.endswith("@" + sender) or sender_lower.endswith("." + sender):
+                return slug
+    return None
+
+
+def parse_with_registry(email_body, sender_email):
+    """Run the registered parser for this sender's bank. Returns (slug, data)
+    or (None, None) when the sender isn't a registered bank."""
+    slug = resolve_bank_slug(sender_email)
+    parser = BANK_PARSERS.get(slug)
+    if not parser:
+        return None, None
+    try:
+        return slug, parser(email_body)
+    except Exception as e:
+        print(f"[Bank Registry] {slug} parser failed: {e}")
+        return slug, None
+
+
+def get_connected_bank_accounts(user_id):
+    """Connected-bank rows for a user (accounts tagged kind=connected_bank)."""
+    if not _is_real_user_id(user_id):
+        return []
+    res = database.get_accounts(user_id)
+    if res["status"] != "success":
+        print(f"[Bank Registry] Could not load accounts for {user_id}: {res['error']}")
+        return []
+    connected = []
+    for row in res["data"]:
+        meta = row.get("metadata") or {}
+        if meta.get("kind") == "connected_bank" and meta.get("bank_slug") in SUPPORTED_BANKS \
+                and meta.get("status", "active") == "active":
+            connected.append(row)
+    return connected
+
+
+def get_connected_bank_slugs(user_id):
+    slugs = []
+    for row in get_connected_bank_accounts(user_id):
+        slug = (row.get("metadata") or {}).get("bank_slug")
+        if slug not in slugs:
+            slugs.append(slug)
+    return slugs
+
+
+def build_gmail_sender_query(bank_slugs):
+    """e.g. 'from:(wemaalert@wemabank.com OR FirstAlert@firstbanknigeria.com)'."""
+    senders = []
+    for slug in bank_slugs:
+        for sender in SUPPORTED_BANKS.get(slug, {}).get("senders", []):
+            if sender not in senders:
+                senders.append(sender)
+    if not senders:
+        return ""
+    return f"from:({' OR '.join(senders)})"
+
+
+def email_belongs_to_bank(email, bank_slug, account_tail=""):
+    """Whether a stored email record is an alert for this bank (and account
+    tail, when both sides know it). Older records predate bank_slug, so fall
+    back to the sender address and the stored bank_name."""
+    if not email.get("is_bank_alert"):
+        return False
+    slug = email.get("bank_slug") or resolve_bank_slug(email.get("sender_email"))
+    if not slug:
+        bank_name = (email.get("bank_name") or "").lower()
+        aliases = SUPPORTED_BANKS.get(bank_slug, {}).get("aliases", [])
+        slug = bank_slug if any(alias in bank_name for alias in aliases) else None
+    if slug != bank_slug:
+        return False
+    email_tail = email.get("account_tail") or ""
+    if account_tail and email_tail and email_tail != account_tail:
+        return False
+    return True
 
 
 
