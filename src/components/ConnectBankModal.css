@@ -1,0 +1,227 @@
+.cbm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 1000;
+}
+
+.cbm-modal {
+  width: min(640px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  background: #fff;
+  border-radius: 16px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  font-family: "Poppins", sans-serif;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.18);
+}
+
+.cbm-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.cbm-header h2 {
+  margin: 0;
+  font-size: 1.35rem;
+  color: #1f2937;
+}
+
+.cbm-header p {
+  margin: 4px 0 0;
+  font-size: 0.9rem;
+  color: #6b7280;
+  line-height: 1.5;
+}
+
+.cbm-close {
+  border: none;
+  background: #f5f5f5;
+  color: #374151;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.cbm-close:hover { background: #e5e7eb; }
+
+.cbm-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+@media (min-width: 560px) {
+  .cbm-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.cbm-bank {
+  width: 100%;
+  min-height: 112px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px 12px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 12px;
+  background: #fff;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.cbm-bank:hover:not(:disabled) { border-color: #2e7d32; }
+
+.cbm-bank:focus-visible {
+  outline: 2px solid #2e7d32;
+  outline-offset: 2px;
+}
+
+.cbm-bank.is-selected {
+  border-color: #2e7d32;
+  background: #f1f8f2;
+}
+
+.cbm-bank.is-connected {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.cbm-logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  object-fit: contain;
+}
+
+.cbm-logo-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.cbm-bank-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #1f2937;
+  text-align: center;
+}
+
+.cbm-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #2e7d32;
+  background: #e8f5e9;
+  padding: 2px 10px;
+  border-radius: 999px;
+}
+
+.cbm-skeleton {
+  background: #f5f5f5;
+  border-color: transparent;
+  animation: cbm-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes cbm-pulse {
+  50% { opacity: 0.5; }
+}
+
+.cbm-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.cbm-form-title {
+  margin: 0;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.cbm-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+@media (min-width: 560px) {
+  .cbm-fields { flex-direction: row; }
+  .cbm-field { flex: 1; }
+}
+
+.cbm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: #4b5563;
+}
+
+.cbm-field input {
+  padding: 10px 14px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 10px;
+  font-family: inherit;
+  font-size: 0.95rem;
+}
+
+.cbm-field input:focus {
+  outline: none;
+  border-color: #2e7d32;
+}
+
+.cbm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.cbm-btn-primary,
+.cbm-btn-secondary {
+  padding: 10px 20px;
+  border-radius: 10px;
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  border: none;
+}
+
+.cbm-btn-primary { background: #2e7d32; color: #fff; }
+.cbm-btn-primary:hover:not(:disabled) { background: #1b5e20; }
+.cbm-btn-secondary { background: #f5f5f5; color: #374151; }
+.cbm-btn-primary:disabled,
+.cbm-btn-secondary:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.cbm-success,
+.cbm-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 0.9rem;
+}
+
+.cbm-success { background: #e8f5e9; color: #1b5e20; }
+.cbm-error { background: #fdecea; color: #d32f2f; }
