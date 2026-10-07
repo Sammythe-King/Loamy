@@ -3006,9 +3006,15 @@ async def get_connected_account_transactions(
     filtered.sort(key=_alert_sort_key, reverse=True)
 
     merchants = {}
+    categories = {}
     monthly = {}
     for email in filtered:
         amount = float(email.get("amount") or 0)
+        if email.get("transaction_type") == "debit":
+            category = normalize_category(email.get("category"))
+            cat_stats = categories.setdefault(category, {"category": category, "total": 0.0, "count": 0})
+            cat_stats["total"] += amount
+            cat_stats["count"] += 1
         month = (email.get("date") or "")[:7] or "unknown"
         bucket = monthly.setdefault(month, {"month": month, "credits": 0.0, "debits": 0.0})
         if email.get("transaction_type") == "credit":
@@ -3039,6 +3045,10 @@ async def get_connected_account_transactions(
     analytics["top_merchants"] = [
         {**m, "total": round(m["total"], 2)}
         for m in sorted(merchants.values(), key=lambda m: m["total"], reverse=True)[:5]
+    ]
+    analytics["top_categories"] = [
+        {**c, "total": round(c["total"], 2)}
+        for c in sorted(categories.values(), key=lambda c: c["total"], reverse=True)[:5]
     ]
     analytics["monthly"] = [
         {**b, "credits": round(b["credits"], 2), "debits": round(b["debits"], 2)}

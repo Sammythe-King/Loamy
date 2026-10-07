@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 
 import database
 import categorizer
-from business_logic import compute_bank_snapshot
+from business_logic import compute_bank_snapshot, load_ledger_transactions
 from models import (
     model,
     gmail_data_collection,
