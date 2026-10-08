@@ -1,0 +1,21 @@
+.connected-banks-card { grid-column: 1 / -1; }
+.connected-banks-header { justify-content: space-between; align-items: center; }
+.connected-banks-header > div { display: flex; align-items: center; gap: 10px; }
+.bank-add-btn { border: 1px solid #2e7d32; background: #fff; color: #1b6e25; border-radius: 999px; padding: 8px 14px; font: inherit; font-weight: 600; cursor: pointer; }
+.bank-add-btn:hover { background: #edf7ee; }
+.connected-banks-list { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.connected-bank-card { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px; border: 1px solid #e2e4df; border-radius: 14px; background: #fff; color: #172b19; text-align: left; cursor: pointer; transition: border-color .2s, box-shadow .2s, transform .2s; }
+.connected-bank-card:hover { border-color: #2e7d32; box-shadow: 0 5px 16px rgba(20, 70, 28, .1); transform: translateY(-1px); }
+.connected-bank-logo { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; background: #eff7ef; color: #23752d; overflow: hidden; flex: 0 0 auto; }
+.connected-bank-logo img { width: 28px; height: 28px; object-fit: contain; }
+.connected-bank-copy, .connected-bank-balance { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.connected-bank-copy { flex: 1; }
+.connected-bank-copy strong, .connected-bank-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.connected-bank-copy small, .connected-bank-balance small { color: #8b918b; font-size: .78rem; }
+.connected-bank-balance { align-items: flex-end; }
+.connected-bank-balance strong { color: #20852b; font-size: .9rem; }
+.connected-bank-arrow { color: #9aa49b; margin-left: 4px; }
+.connected-banks-empty { display: flex; align-items: center; justify-content: space-between; gap: 14px; color: #6f786f; }
+.connected-banks-empty p { margin: 0; }
+@media (max-width: 650px) { .connected-banks-empty { align-items: flex-start; flex-direction: column; } .connected-banks-header { align-items: flex-start; gap: 10px; flex-direction: column; } .connected-bank-balance { display: none; } }
+

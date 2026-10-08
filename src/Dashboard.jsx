@@ -1,11 +1,90 @@
 import React, { useState, useEffect } from "react";
 import "./Dashboard.css";
+import "./components/ConnectedBanks.css";
 import { useNavigate } from "react-router-dom";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import NotificationBanner from "./NotificationBanner";
 import { runActivitySync } from "./services/activitySyncService";
 import LedgerLogWidget from "./LedgerLogWidget";
 import ReviewQueueNavButton from "./ReviewQueueNavButton";
+import ConnectBankModal from "./components/ConnectBankModal.jsx";
+import { fetchConnectedAccounts } from "./services/bankService.js";
+
+const mergeStableList = (next, previous) => {
+  // Background syncs can briefly return an incomplete page while Gmail data is
+  // being written. Keep the last successful list instead of making the UI
+  // appear to lose transactions or review items.
+  return Array.isArray(next) && (next.length > 0 || previous.length === 0) ? next : previous;
+};
+
+const getBankAccounts = (data) => data?.accounts || data?.data?.accounts || [];
+
+const ConnectedBanks = ({ accounts, onAddBank }) => (
+  <section className="card connected-banks-card" aria-labelledby="connected-banks-title">
+    <div className="card-header connected-banks-header">
+      <div>
+        <i className="fa-solid fa-building-columns" style={{ color: "#1976D2" }} />
+        <h3 id="connected-banks-title">Connected Banks</h3>
+      </div>
+      <button type="button" className="bank-add-btn" onClick={onAddBank}>
+        <i className="fa-solid fa-plus" aria-hidden="true" /> Add bank
+      </button>
+    </div>
+    {accounts.length > 0 ? (
+      <div className="connected-banks-list">
+        {accounts.map((account) => (
+          <button
+            type="button"
+            className="connected-bank-card"
+            key={account.id}
+            onClick={() => window.location.assign(`/accounts/${encodeURIComponent(account.id)}`)}
+          >
+            <span className="connected-bank-logo">
+              {account.logo ? <img src={account.logo} alt="" /> : <i className="fa-solid fa-building-columns" />}
+            </span>
+            <span className="connected-bank-copy">
+              <strong>{account.nickname || account.bank_name}</strong>
+              <small>{account.account_tail ? `•••• ${account.account_tail}` : account.bank_name}</small>
+            </span>
+            <span className="connected-bank-balance">
+              <strong>{formatBankCurrency(account.summary?.balance || 0)}</strong>
+              <small>{account.summary?.transaction_count || 0} transactions</small>
+            </span>
+            <i className="fa-solid fa-chevron-right connected-bank-arrow" aria-hidden="true" />
+          </button>
+        ))}
+      </div>
+    ) : (
+      <div className="connected-banks-empty">
+        <p>No bank accounts connected yet.</p>
+        <button type="button" className="action-btn" onClick={onAddBank}>Connect your first bank</button>
+      </div>
+    )}
+  </section>
+);
+
+const formatBankCurrency = (value) => `₦${Number(value || 0).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const DashboardBankSection = ({ accounts, onAccountsChange }) => {
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  return (
+    <>
+      <ConnectedBanks accounts={accounts} onAddBank={() => setIsModalOpen(true)} />
+      <ConnectBankModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        userId={getSessionUserId()}
+        connectedAccounts={accounts}
+        onConnected={(account) => {
+          onAccountsChange((previous) => [...previous.filter((item) => item.id !== account.id), account]);
+          setIsModalOpen(false);
+          window.dispatchEvent(new CustomEvent("loamy:data-synced"));
+        }}
+      />
+    </>
+  );
+};
+
 
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
@@ -273,6 +352,13 @@ const Dashboard = () => {
   // True while a manual "Refresh Data" sync is pulling fresh Gmail data.
   const [refreshing, setRefreshing] = useState(false);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const [connectedAccounts, setConnectedAccounts] = useState([]);
+
+  useEffect(() => {
+    fetchConnectedAccounts(getSessionUserId()).then((result) => {
+      if (result.status === "success") setConnectedAccounts(getBankAccounts(result));
+    });
+  }, []);
 
   useEffect(() => {
     fetchDashboardData();
@@ -347,7 +433,14 @@ const Dashboard = () => {
       const data = await response.json();
       
       if (data.status === "success") {
-        setDashboardData(data);
+        setDashboardData((previous) => ({
+          ...previous,
+          ...data,
+          recent_transactions: mergeStableList(data.recent_transactions, previous.recent_transactions),
+          bank_transactions: mergeStableList(data.bank_transactions, previous.bank_transactions),
+          needs_review: mergeStableList(data.needs_review, previous.needs_review),
+          expense_breakdown: mergeStableList(data.expense_breakdown, previous.expense_breakdown),
+        }));
         setError(null);
       } else {
         setError(data.error || "Failed to load dashboard data");
@@ -470,6 +563,7 @@ const Dashboard = () => {
       <WhatsAppConnect />
 
       {/* Main Content Grid */}
+      <DashboardBankSection accounts={connectedAccounts} onAccountsChange={setConnectedAccounts} />
       <div className="dashboard-grid">
         {/* Cash Flow Overview */}
         <div className="card cashflow-card">
