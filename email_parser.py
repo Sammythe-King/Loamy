@@ -737,7 +737,7 @@ async def _fetch_gmail_emails_core(data: dict):
                     except (TypeError, ValueError):
                         pass
 
-                    parsed_email = parse_gmail_message_full(msg_data, allowed_bank_slugs)
+                    parsed_email = parse_gmail_message_full(msg_data, allowed_bank_slugs, user_id)
                     if parsed_email and parsed_email['id'] not in [e.get('id') for e in all_messages]:
                         all_messages.append(parsed_email)
         
@@ -839,7 +839,7 @@ def get_email_body(payload):
 
 
 
-def parse_gmail_message_full(msg_data, allowed_bank_slugs=None):
+def parse_gmail_message_full(msg_data, allowed_bank_slugs=None, user_id=None):
     """Parse Gmail message with FULL body content for amount extraction.
 
     When `allowed_bank_slugs` is given, bank alerts from banks outside that
@@ -967,7 +967,29 @@ def parse_gmail_message_full(msg_data, allowed_bank_slugs=None):
                         print(f"Bank True-Up: {matching['metadata'].get('vendor')} - Est ₦{matching['metadata'].get('estimated_ngn')} → Actual ₦{amount}")
                 except Exception as e:
                     print(f"True-up check error: {e}")
-            
+
+            if bank_data.get("balance") is not None and bank_slug and user_id:
+                try:
+                    for connected_account in get_connected_bank_accounts(user_id):
+                        metadata = connected_account.get("metadata") or {}
+                        if metadata.get("bank_slug") != bank_slug:
+                            continue
+                        connected_tail = metadata.get("account_tail") or ""
+                        if connected_tail and account_tail and connected_tail != account_tail:
+                            continue
+                        database.add_account(
+                            user_id=user_id,
+                            account_id=connected_account["id"],
+                            account_name=connected_account.get("account_name") or SUPPORTED_BANKS[bank_slug]["name"],
+                            balance=bank_data["balance"],
+                            currency=connected_account.get("currency") or "NGN",
+                            document=connected_account.get("document") or f"Connected bank: {SUPPORTED_BANKS[bank_slug]['name']}",
+                            **metadata,
+                        )
+                        break
+                except Exception as e:
+                    print(f"[Bank Balance] Could not update account balance: {e}")
+
             return {
                 "id": msg_data.get("id"),
                 "sender": sender,

@@ -1,0 +1,2 @@
+.shared-sidebar .menu-item { text-decoration: none; }
+.shared-sidebar .menu-item.active { background: #e8f4e8; color: #16803c; border-right: 3px solid #16803c; }

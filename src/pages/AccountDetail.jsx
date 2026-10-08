@@ -89,6 +89,10 @@ export default function AccountDetail() {
               <FontAwesomeIcon icon={faFileInvoiceDollar} />
               <span>Invoices</span>
             </Link>
+            <Link to="/accounts" className="menu-item">
+              <FontAwesomeIcon icon={faBuildingColumns} />
+              <span>Bank Accounts</span>
+            </Link>
             <Link to="/review-queue" className="menu-item">
               <FontAwesomeIcon icon={faListCheck} />
               <span>Review Queue</span>
@@ -216,12 +220,12 @@ export default function AccountDetail() {
                         return (
                           <tr key={tx.id}>
                             <td className="ad-nowrap">{formatDate(tx.date)}</td>
-                            <td className="ad-desc">{tx.merchant || "—"}</td>
+                            <td className="ad-desc">{tx.merchant || tx.description || tx.raw_subject || "Transaction"}</td>
                             <td><span className="ad-chip">{tx.category || "Uncategorized"}</span></td>
                             <td className={`ad-num ad-nowrap ${isCredit ? "ad-income-text" : "ad-expense-text"}`}>
-                              {isCredit ? "+" : "−"}{formatNaira(tx.amount)}
+                              {isCredit ? "+" : "−"}{formatNaira(tx.amount ?? tx.transaction_amount ?? 0)}
                             </td>
-                            <td className="ad-num ad-nowrap ad-muted">{formatNaira(tx.balance_after)}</td>
+                            <td className="ad-num ad-nowrap ad-muted">{formatNaira(tx.balance_after ?? tx.balance ?? tx.running_balance ?? 0)}</td>
                           </tr>
                         );
                       })}
