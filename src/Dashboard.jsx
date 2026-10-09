@@ -394,21 +394,18 @@ const Dashboard = () => {
     try {
       const sess = JSON.parse(localStorage.getItem("loamy_session") || "{}");
       const userId = sess.user_id || "default";
-      const res = await fetch(`${API_URL}/gmail/server-sync`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: userId }),
-      });
-      const json = await res.json();
-      if (json?.data?.reason === "no_credentials") {
-        await runActivitySync({ force: true, fullResync: true });
-      }
-    } catch (err) {
-      console.error("[v0] Manual refresh sync failed:", err);
-      try {
-        await runActivitySync({ force: true, fullResync: true });
-      } catch (_) {}
-    } finally {
+  const res = await fetch(`${API_URL}/email/reparse-stored`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ user_id: userId }),
+  });
+  const json = await res.json();
+  if (!res.ok || json?.status !== "success") {
+    throw new Error(json?.error || "Stored email reparse failed");
+  }
+  } catch (err) {
+  console.error("[v0] Stored email reparse failed:", err);
+  } finally {
       await Promise.all([fetchDashboardData(), fetchInvoices()]);
       setRefreshing(false);
     }
