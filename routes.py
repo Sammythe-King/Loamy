@@ -92,6 +92,9 @@ from email_parser import (
     _fetch_gmail_emails_core,
     get_email_body,
     parse_gmail_message_full,
+    parse_wema_alert,
+    parse_firstbank_alert,
+    reparse_stored_bank_email,
     _ai_categorize_bank_alerts,
     _sync_gmail_data_core,
     INVALID_USER_IDS,
@@ -1151,6 +1154,75 @@ async def add_to_review_queue(data: dict):
     except Exception as e:
         return {"status": "error", "data": None, "error": str(e)}
 
+
+
+@router.post("/email/reparse-stored")
+async def reparse_stored_email_data(payload: dict):
+    """Re-parse stored bank emails and repair derived ledger/account data."""
+    user_id = payload.get("user_id")
+    if not user_id or not _is_real_user_id(user_id):
+        return {"status": "error", "error": "invalid_user_id"}
+
+    stored = database.get_gmail_data(user_id)
+    if stored.get("status") != "success" or not stored.get("data"):
+        return {"status": "error", "error": "no_stored_email_data"}
+
+    emails = stored["data"].get("emails") or []
+    reparsed = []
+    inserted = 0
+    repaired = 0
+    for email in emails:
+        if not isinstance(email, dict):
+            continue
+        text = f"{email.get('subject', '')} {email.get('sender', '')} {email.get('from', '')}".lower()
+        if not any(token in text for token in ("wema", "alat", "firstbank", "first bank")):
+            continue
+        parsed = reparse_stored_bank_email(email)
+        reparsed.append(parsed)
+        amount = parsed.get("amount")
+        source_id = parsed.get("id") or parsed.get("message_id") or hashlib.sha256(text.encode()).hexdigest()[:24]
+        if amount is not None and float(amount or 0) > 0:
+            tx_result = database.add_transaction(
+                user_id=user_id,
+                tx_id=f"gmail_{source_id}",
+                amount=amount,
+                vendor=parsed.get("merchant") or parsed.get("subject") or "Bank transaction",
+                description=parsed.get("merchant") or parsed.get("subject") or "Bank transaction",
+                date=parsed.get("date") or parsed.get("received_at") or datetime.now().isoformat(),
+                transaction_type=parsed.get("transaction_type") or "debit",
+                source_id=source_id,
+                source="gmail_bank_alert",
+                original_currency=parsed.get("currency") or "NGN",
+            )
+            if tx_result.get("status") == "success":
+                inserted += 1
+        repaired += 1
+
+    reparsed_by_id = {item.get("id") or item.get("message_id"): item for item in reparsed}
+    merged_emails = [reparsed_by_id.get(item.get("id") or item.get("message_id"), item) for item in emails]
+    saved = database.save_gmail_data(user_id, merged_emails, stored["data"].get("stats") or {})
+    if saved.get("status") != "success":
+        return {"status": "error", "error": "could_not_save_reparsed_emails"}
+
+    accounts = get_connected_bank_accounts(user_id)
+    for account in accounts:
+        account_emails = [e for e in reparsed if (e.get("bank_name") or "").lower() in (account.get("account_name") or "").lower()]
+        latest = next((e for e in sorted(account_emails, key=lambda item: item.get("date") or "", reverse=True) if e.get("current_balance") is not None), None)
+        if latest:
+            metadata = dict(account.get("metadata") or {})
+            account_number_mask = latest.get("account_number_mask") or metadata.pop("account_number_mask", None)
+            database.add_account(
+                user_id=user_id,
+                account_id=account["id"],
+                account_name=account.get("account_name") or latest.get("bank_name"),
+                balance=latest["current_balance"],
+                currency=account.get("currency") or "NGN",
+                document=account.get("document") or "Connected bank",
+                account_number_mask=account_number_mask,
+                **metadata,
+            )
+
+    return {"status": "success", "emails_reparsed": repaired, "transactions_upserted": inserted}
 
 
 @router.get("/review-queue/{user_id}")

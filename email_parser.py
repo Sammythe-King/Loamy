@@ -1774,6 +1774,28 @@ _FIRSTBANK_LABELS = {
 }
 
 
+def reparse_stored_bank_email(email: dict) -> dict:
+    """Re-parse a stored bank email without requiring another Gmail fetch."""
+    body = email.get("raw_body") or email.get("body") or email.get("html_body") or email.get("snippet") or ""
+    text = f"{email.get('subject', '')}\n{body}"
+    bank_name = (email.get("bank_name") or email.get("sender") or email.get("from") or "").lower()
+    parser = parse_wema_alert if any(token in text.lower() + bank_name for token in ("wema", "alat")) else parse_firstbank_alert
+    parsed = parser(text)
+    return {
+        **email,
+        "amount": parsed.get("amount") if parsed.get("amount") is not None else email.get("amount"),
+        "merchant": parsed.get("merchant") or email.get("merchant") or email.get("narration") or email.get("description"),
+        "running_balance": parsed.get("balance") if parsed.get("balance") is not None else email.get("running_balance", email.get("balance")),
+        "balance": parsed.get("balance") if parsed.get("balance") is not None else email.get("balance"),
+        "current_balance": parsed.get("balance") if parsed.get("balance") is not None else email.get("current_balance"),
+        "account_number_mask": parsed.get("account_number_mask") or email.get("account_number_mask"),
+        "account_tail": parsed.get("account_tail") or email.get("account_tail"),
+        "transaction_type": parsed.get("type") or email.get("transaction_type") or "debit",
+        "is_bank_alert": True,
+        "bank_name": email.get("bank_name") or ("Wema Bank" if parser is parse_wema_alert else "FirstBank"),
+    }
+
+
 def parse_firstbank_alert(email_body: str) -> dict:
     fields = _extract_labeled_fields(email_body or "", _FIRSTBANK_LABELS)
     amount_match = re.search(_AMOUNT_RE, fields.get("amount", "").replace("NGN", " "))
