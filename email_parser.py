@@ -1707,15 +1707,15 @@ def _clean_merchant(raw):
 _WEMA_LABELS = {
     "account_number": r'Account\s*Number\s*:',
     "account_name": r'Account\s*Name\s*:',
-    "amount": r'Transaction\s*Amount\s*:',
-    "tx_type": r'Transaction\s*Type\s*:',
-    "description": r'Description\s*:',
-    "location": r'Transaction\s*Location\s*:',
-    "reference": r'(?:Transaction\s*Reference|Reference|Session\s*ID)\s*:',
-    "datetime": r'Transaction\s*Date\s*(?:&amp;|&|and)\s*Time\s*:',
-    "value_date": r'Value\s*Date\s*:',
-    "balance": r'Current\s*Balance\s*as\s*at',
-    "available": r'Available\s*Balance\s*:',
+    "amount": r'Transaction\s*Amount\s*:?\s*',
+    "tx_type": r'Transaction\s*Type\s*:?\s*',
+    "description": r'Description\s*:?\s*',
+    "location": r'Transaction\s*Location\s*:?\s*',
+    "reference": r'(?:Transaction\s*Reference|Reference|Session\s*ID)\s*:?\s*',
+    "datetime": r'Transaction\s*Date\s*(?:&amp;|&|and)\s*Time\s*:?\s*',
+    "value_date": r'Value\s*Date\s*:?\s*',
+    "balance": r'Current\s*Balance\s*as\s*at\s*',
+    "available": r'Available\s*Balance\s*:?\s*',
 }
 
 
@@ -1723,13 +1723,13 @@ def parse_wema_alert(email_body: str) -> dict:
     fields = _extract_labeled_fields(email_body or "", _WEMA_LABELS)
 
     amount_value = fields.get("amount", "")
-    amount_match = re.search(_AMOUNT_RE + r'\s*NGN', amount_value, re.IGNORECASE) \
+    amount_match = re.search(_AMOUNT_RE + r'\s*(?:NGN|N)?', amount_value, re.IGNORECASE) \
         or re.search(_AMOUNT_RE, amount_value)
 
     # "Current Balance as at 14-05-2026 13:45:40 : 307,775.68 NGN" - the label
     # carries a timestamp full of colons, so take the figure tagged with NGN.
     balance_value = fields.get("balance", "")
-    balance_match = re.search(r':\s*' + _AMOUNT_RE + r'\s*NGN', balance_value, re.IGNORECASE) \
+    balance_match = re.search(r'(?:\b(?:at|:)\s*)' + _AMOUNT_RE + r'\s*NGN', balance_value, re.IGNORECASE) \
         or re.search(_AMOUNT_RE + r'\s*NGN', balance_value, re.IGNORECASE)
 
     return {
@@ -1806,6 +1806,10 @@ def resolve_bank_slug(sender_email):
             sender = sender.lower()
             if sender_lower == sender or sender_lower.endswith("@" + sender) or sender_lower.endswith("." + sender):
                 return slug
+    # Some Wema alerts are sent from branded mailbox aliases that do not use
+    # the canonical sender address. Keep them attached to the Wema connection.
+    if any(token in sender_lower for token in ("wema", "alat")):
+        return "wema"
     return None
 
 

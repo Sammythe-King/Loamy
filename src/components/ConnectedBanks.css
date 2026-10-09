@@ -1,5 +1,12 @@
-.connected-banks-card { grid-column: 1 / -1; }
-.connected-banks-header { justify-content: space-between; align-items: center; }
+ .dashboard-bank-hero { grid-column: 1 / -1; display: grid; gap: 14px; margin-bottom: 20px; }
+ .net-worth-hero { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 26px 30px; border-radius: 20px; color: #fff; background: linear-gradient(135deg, #0b4b18, #18752a); box-shadow: 0 12px 28px rgba(11, 75, 24, .16); }
+ .net-worth-hero > div { display: flex; flex-direction: column; gap: 6px; }
+ .net-worth-eyebrow { display: flex; align-items: center; gap: 9px; font-size: .9rem; opacity: .82; text-transform: uppercase; letter-spacing: .08em; }
+ .net-worth-hero strong { font-size: clamp(2rem, 4vw, 3rem); letter-spacing: -.04em; }
+ .net-worth-hero small { opacity: .72; }
+ .net-worth-icon { font-size: 2.2rem; opacity: .35; }
+ .connected-banks-card { padding: 4px 0 0; }
+ .connected-banks-header { justify-content: space-between; align-items: center; }
 .connected-banks-header > div { display: flex; align-items: center; gap: 10px; }
 .bank-add-btn { border: 1px solid #2e7d32; background: #fff; color: #1b6e25; border-radius: 999px; padding: 8px 14px; font: inherit; font-weight: 600; cursor: pointer; }
 .bank-add-btn:hover { background: #edf7ee; }
