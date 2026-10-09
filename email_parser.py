@@ -1733,20 +1733,14 @@ _WEMA_LABELS = {
 
 def parse_wema_alert(email_body: str) -> dict:
     """Parse the Wema/ALAT HTML alert layout before generic extraction runs."""
-    body = re.sub(r"<[^>]+>", "\\n", email_body or "")
-    body = html.unescape(body)
-    body = re.sub(r"\\r", "", body)
+    clean_body = html.unescape(re.sub(r"<[^>]+>", " ", email_body or ""))
+    clean_body = re.sub(r"\s+", " ", clean_body).strip()
 
-    amount_match = re.search(
-        r"Transaction\\s+Amount\\s*:\\s*([\\d,]+\\.?\\d*)\\s*NGN", body, re.IGNORECASE
-    )
-    balance_match = re.search(
-        r"Current\\s+Balance\\s+as\\s+at[^\\n:]*:\\s*([\\d,]+\\.?\\d*)\\s*NGN",
-        body, re.IGNORECASE,
-    )
-    account_match = re.search(r"Account\\s+Number\\s*:\\s*([^\\n<]+)", body, re.IGNORECASE)
-    description_match = re.search(r"Description\\s*:\\s*([^\\n<]+)", body, re.IGNORECASE)
-    date_match = re.search(r"Transaction\\s+Date\\s*(?:&|and)?\\s*Time\\s*:\\s*([^\\n<]+)", body, re.IGNORECASE)
+    amount_match = re.search(r"Transaction\s+Amount[^\d]*([\d,]+\.\d{2})\s*NGN", clean_body, re.IGNORECASE)
+    balance_match = re.search(r"Current\s+Balance[^\d]*([\d,]+\.\d{2})\s*NGN", clean_body, re.IGNORECASE)
+    account_match = re.search(r"Account\s+Number\s*:\s*([^\s]+)", clean_body, re.IGNORECASE)
+    description_match = re.search(r"Description\s*:\s*(.*?)(?=Reference\s+Number|Transaction\s+Amount)", clean_body, re.IGNORECASE)
+    date_match = re.search(r"Transaction\s+Date\s*(?:&|and)?\s*Time\s*:\s*(.*?)(?=Value\s+Date|Current\s+Balance)", clean_body, re.IGNORECASE)
     raw_description = description_match.group(1).strip() if description_match else ""
     merchant = re.sub(r"^POS\\s+Buy\\s+on\\s+\\d{2}-\\d{2}-\\d{4}@", "", raw_description, flags=re.IGNORECASE)
     merchant = re.sub(r"^POS\\s+Buy\\s+on\\s+[^@]+@", "", merchant, flags=re.IGNORECASE)

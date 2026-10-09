@@ -1225,6 +1225,18 @@ async def reparse_stored_email_data(payload: dict):
     return {"status": "success", "emails_reparsed": repaired, "transactions_upserted": inserted}
 
 
+@router.get("/force-reparse/{user_id}")
+async def force_reparse_stored_email_data(user_id: str):
+    """Force-reparse stored Wema emails without depending on the frontend."""
+    if not user_id or not _is_real_user_id(user_id):
+        return {"status": "error", "error": "invalid_user_id"}
+    result = await reparse_stored_email_data({"user_id": user_id})
+    return {
+        **result,
+        "message": "Stored Wema emails reparsed successfully" if result.get("status") == "success" else "Stored email reparse failed",
+    }
+
+
 @router.get("/review-queue/{user_id}")
 async def get_review_queue(user_id: str):
     """Return all pending review items for a user (newest first).
