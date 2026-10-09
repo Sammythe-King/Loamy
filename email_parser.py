@@ -6,6 +6,7 @@ server-side background sync jobs, and all bank-alert / vendor-receipt email
 classification + parsing logic (the "Smart Mailroom Clerk").
 """
 import re
+import html
 import json
 import time
 import base64
@@ -825,7 +826,6 @@ def get_email_body(payload):
                 # Fallback to HTML if no plain text
                 html_body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="ignore")
                 # Strip HTML tags for basic text extraction
-                import re
                 body = re.sub(r'<[^>]+>', ' ', html_body)
                 body = re.sub(r'\s+', ' ', body).strip()
             elif "parts" in part:
@@ -942,8 +942,10 @@ def parse_gmail_message_full(msg_data, allowed_bank_slugs=None, user_id=None):
                 if registry_data.get("merchant"):
                     bank_data["narration"] = registry_data["merchant"]
                 account_tail = registry_data.get("account_tail") or ""
-            if bank_slug and not detected_bank:
-                detected_bank = SUPPORTED_BANKS[bank_slug]["name"]
+                if registry_data.get("account_number_mask"):
+                    bank_data["account_number_mask"] = registry_data["account_number_mask"]
+                if bank_slug and not detected_bank:
+                    detected_bank = SUPPORTED_BANKS[bank_slug]["name"]
             amount = bank_data.get("amount")
             
             # === STEP B: TRUE-UP CHECK ===
@@ -977,14 +979,22 @@ def parse_gmail_message_full(msg_data, allowed_bank_slugs=None, user_id=None):
                         connected_tail = metadata.get("account_tail") or ""
                         if connected_tail and account_tail and connected_tail != account_tail:
                             continue
+                        account_metadata = dict(metadata)
+                        account_metadata.update({
+                            "account_tail": account_tail or account_metadata.get("account_tail", ""),
+                            "account_number_mask": bank_data.get("account_number_mask") or account_metadata.get("account_number_mask", ""),
+                        })
+                        account_number_mask = account_metadata.pop("account_number_mask", "")
                         database.add_account(
                             user_id=user_id,
                             account_id=connected_account["id"],
                             account_name=connected_account.get("account_name") or SUPPORTED_BANKS[bank_slug]["name"],
                             balance=bank_data["balance"],
+                            current_balance=bank_data["balance"],
+                            account_number_mask=account_number_mask,
                             currency=connected_account.get("currency") or "NGN",
                             document=connected_account.get("document") or f"Connected bank: {SUPPORTED_BANKS[bank_slug]['name']}",
-                            **metadata,
+                            **account_metadata,
                         )
                         break
                 except Exception as e:
@@ -1002,6 +1012,8 @@ def parse_gmail_message_full(msg_data, allowed_bank_slugs=None, user_id=None):
                 "currency": bank_data.get("currency", "NGN"),
                 "transaction_type": bank_data.get("transaction_type"),
                 "balance": bank_data.get("balance"),
+                "current_balance": bank_data.get("balance"),
+                "account_number_mask": bank_data.get("account_number_mask"),
                 "narration": bank_data.get("narration"),
                 "category": "Banking",
                 "is_bank_alert": True,
@@ -1720,24 +1732,31 @@ _WEMA_LABELS = {
 
 
 def parse_wema_alert(email_body: str) -> dict:
-    fields = _extract_labeled_fields(email_body or "", _WEMA_LABELS)
+    """Parse the Wema/ALAT HTML alert layout before generic extraction runs."""
+    body = re.sub(r"<[^>]+>", "\\n", email_body or "")
+    body = html.unescape(body)
+    body = re.sub(r"\\r", "", body)
 
-    amount_value = fields.get("amount", "")
-    amount_match = re.search(_AMOUNT_RE + r'\s*(?:NGN|N)?', amount_value, re.IGNORECASE) \
-        or re.search(_AMOUNT_RE, amount_value)
-
-    # "Current Balance as at 14-05-2026 13:45:40 : 307,775.68 NGN" - the label
-    # carries a timestamp full of colons, so take the figure tagged with NGN.
-    balance_value = fields.get("balance", "")
-    balance_match = re.search(r'(?:\b(?:at|:)\s*)' + _AMOUNT_RE + r'\s*NGN', balance_value, re.IGNORECASE) \
-        or re.search(_AMOUNT_RE + r'\s*NGN', balance_value, re.IGNORECASE)
-
+    amount_match = re.search(
+        r"Transaction\\s+Amount\\s*:\\s*([\\d,]+\\.?\\d*)\\s*NGN", body, re.IGNORECASE
+    )
+    balance_match = re.search(
+        r"Current\\s+Balance\\s+as\\s+at[^\\n:]*:\\s*([\\d,]+\\.?\\d*)\\s*NGN",
+        body, re.IGNORECASE,
+    )
+    account_match = re.search(r"Account\\s+Number\\s*:\\s*([^\\n<]+)", body, re.IGNORECASE)
+    description_match = re.search(r"Description\\s*:\\s*([^\\n<]+)", body, re.IGNORECASE)
+    date_match = re.search(r"Transaction\\s+Date\\s*(?:&|and)?\\s*Time\\s*:\\s*([^\\n<]+)", body, re.IGNORECASE)
+    raw_description = description_match.group(1).strip() if description_match else ""
+    merchant = re.sub(r"^POS\\s+Buy\\s+on\\s+\\d{2}-\\d{2}-\\d{4}@", "", raw_description, flags=re.IGNORECASE)
+    merchant = re.sub(r"^POS\\s+Buy\\s+on\\s+[^@]+@", "", merchant, flags=re.IGNORECASE)
     return {
         "amount": _to_float(amount_match.group(1)) if amount_match else None,
-        "type": _detect_tx_type(fields.get("tx_type"), email_body or ""),
-        "account_tail": _account_tail(fields.get("account_number")),
-        "merchant": _clean_merchant(fields.get("description")),
-        "date": _normalize_alert_date(fields.get("datetime")),
+        "type": _detect_tx_type("", body),
+        "account_tail": _account_tail(account_match.group(1) if account_match else ""),
+        "account_number_mask": account_match.group(1).strip() if account_match else "",
+        "merchant": merchant.strip(),
+        "date": _normalize_alert_date(date_match.group(1) if date_match else ""),
         "currency": "NGN",
         "balance": _to_float(balance_match.group(1)) if balance_match else None,
     }

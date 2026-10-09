@@ -403,7 +403,7 @@ def delete_expense(expense_id: str) -> dict:
 # ACCOUNTS
 # ============================================
 def add_account(user_id: str, account_id: str, **fields) -> dict:
-    known = {"account_name", "balance", "currency", "document"}
+    known = {"account_name", "balance", "currency", "document", "current_balance", "account_number_mask"}
     row = {"id": account_id, "user_id": user_id}
     extra_meta = {}
     for k, v in fields.items():
