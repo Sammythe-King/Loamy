@@ -21,7 +21,6 @@ load_dotenv()
 
 import database
 import categorizer
-import chat_tools
 from whatsapp import WHATSAPP_FORMAT_RULES, set_ai_handler, set_receipt_handler
 from models import (
     model,
@@ -181,6 +180,13 @@ def _format_context(ctx: dict) -> str:
 === RECENT TRANSACTIONS (most recent first, both sources) ===
 {ledger_lines}
 """
+
+
+def generate_reply(model_instance, advisor_prompt: str, user_id: str, user_msg: str) -> str:
+    """Generate a reply for the history-based chat flow using this service's model."""
+    prompt = f"{advisor_prompt}\n\nUser question: {user_msg}\n\nYour answer:"
+    response = model_instance.generate_content(prompt)
+    return (response.text or "").strip() or "I'm not sure how to answer that yet."
 
 
 def build_financial_snapshot(user_id: str) -> str:
@@ -901,7 +907,7 @@ async def chat_with_history(query: dict):
         # Function calling + conversation state: a "yes" after Loamy offers to
         # categorize triggers get_uncategorized_transactions instead of a re-summary.
         reply_text = await asyncio.to_thread(
-            chat_tools.generate_reply, model, advisor_prompt, user_id, user_msg
+            generate_reply, model, advisor_prompt, user_id, user_msg
         )
 
         # --- Handle CREATE_INVOICE marker (AI-driven invoice creation) ---
