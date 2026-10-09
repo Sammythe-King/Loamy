@@ -19,49 +19,41 @@ const mergeStableList = (next, previous) => {
 
 const getBankAccounts = (data) => data?.accounts || data?.data?.accounts || [];
 
-const ConnectedBanks = ({ accounts, onAddBank }) => (
-  <section className="card connected-banks-card" aria-labelledby="connected-banks-title">
-    <div className="card-header connected-banks-header">
-      <div>
-        <i className="fa-solid fa-building-columns" style={{ color: "#1976D2" }} />
-        <h3 id="connected-banks-title">Connected Banks</h3>
+const ConnectedBanks = ({ accounts, onAddBank }) => {
+  const totalBalance = accounts.reduce((total, account) => total + Number(account.summary?.balance ?? account.balance ?? 0), 0);
+  return (
+    <section className="dashboard-bank-hero" aria-labelledby="connected-banks-title">
+      <div className="net-worth-hero">
+        <div>
+          <span className="net-worth-eyebrow"><i className="fa-solid fa-wallet" aria-hidden="true" /> Total Combined Net Worth</span>
+          <strong>{formatBankCurrency(totalBalance)}</strong>
+          <small>Sum of all connected bank accounts</small>
+        </div>
+        <i className="fa-solid fa-arrow-trend-up net-worth-icon" aria-hidden="true" />
       </div>
-      <button type="button" className="bank-add-btn" onClick={onAddBank}>
-        <i className="fa-solid fa-plus" aria-hidden="true" /> Add bank
-      </button>
-    </div>
-    {accounts.length > 0 ? (
-      <div className="connected-banks-list">
-        {accounts.map((account) => (
-          <button
-            type="button"
-            className="connected-bank-card"
-            key={account.id}
-            onClick={() => window.location.assign(`/accounts/${encodeURIComponent(account.id)}`)}
-          >
-            <span className="connected-bank-logo">
-              {account.logo ? <img src={account.logo} alt="" /> : <i className="fa-solid fa-building-columns" />}
-            </span>
-            <span className="connected-bank-copy">
-              <strong>{account.nickname || account.bank_name}</strong>
-              <small>{account.account_tail ? `•••• ${account.account_tail}` : account.bank_name}</small>
-            </span>
-            <span className="connected-bank-balance">
-              <strong>{formatBankCurrency(account.summary?.balance || 0)}</strong>
-              <small>{account.summary?.transaction_count || 0} transactions</small>
-            </span>
-            <i className="fa-solid fa-chevron-right connected-bank-arrow" aria-hidden="true" />
-          </button>
-        ))}
+      <div className="connected-banks-card">
+        <div className="connected-banks-header">
+          <div><i className="fa-solid fa-building-columns" style={{ color: "#1976D2" }} aria-hidden="true" /><h3 id="connected-banks-title">Connected bank accounts</h3></div>
+          <button type="button" className="bank-add-btn" onClick={onAddBank}><i className="fa-solid fa-plus" aria-hidden="true" /> Add bank</button>
+        </div>
+        {accounts.length > 0 ? (
+          <div className="connected-banks-list">
+            {accounts.map((account) => {
+              const balance = account.summary?.balance ?? account.balance ?? 0;
+              const count = account.summary?.transaction_count ?? account.transaction_count ?? account.transactions_count ?? 0;
+              return <button type="button" className="connected-bank-card" key={account.id} onClick={() => window.location.assign(`/accounts/${encodeURIComponent(account.id)}`)}>
+                <span className="connected-bank-logo">{account.logo ? <img src={account.logo} alt="" /> : <i className="fa-solid fa-building-columns" aria-hidden="true" />}</span>
+                <span className="connected-bank-copy"><strong>{account.nickname || account.bank_name || account.account_name}</strong><small>•••• {account.account_tail || "—"}</small></span>
+                <span className="connected-bank-balance"><strong>{formatBankCurrency(balance)}</strong><small>{count} transactions</small></span>
+                <i className="fa-solid fa-chevron-right connected-bank-arrow" aria-hidden="true" />
+              </button>;
+            })}
+          </div>
+        ) : <div className="connected-banks-empty"><p>No bank accounts connected yet.</p><button type="button" className="action-btn" onClick={onAddBank}>Connect your first bank</button></div>}
       </div>
-    ) : (
-      <div className="connected-banks-empty">
-        <p>No bank accounts connected yet.</p>
-        <button type="button" className="action-btn" onClick={onAddBank}>Connect your first bank</button>
-      </div>
-    )}
-  </section>
-);
+    </section>
+  );
+};
 
 const formatBankCurrency = (value) => `₦${Number(value || 0).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
