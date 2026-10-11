@@ -1239,6 +1239,23 @@ async def force_reparse_stored_email_data(user_id: str):
             return {"status": "error", "error": "no_stored_email_data"}
 
         emails = (stored["data"] or {}).get("emails") or []
+
+        # Older stored records never kept the email body, so they cannot be
+        # re-parsed locally. Re-pull from Gmail instead: the forced sync
+        # re-parses with the fixed Wema parser and overwrites records by id.
+        has_bodies = any(
+            isinstance(e, dict) and (e.get("raw_body") or e.get("body") or e.get("html_body"))
+            for e in emails
+        )
+        if not has_bodies:
+            spawn_background_sync(user_id, force=True)
+            return {
+                "status": "success",
+                "message": "Stored emails have no body to re-parse. Started a full Gmail resync instead; reload the dashboard in about a minute.",
+                "total_emails": len(emails),
+                "resync_started": True,
+            }
+
         merged_emails = []
         updated = 0
         skipped = 0
