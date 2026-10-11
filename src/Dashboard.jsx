@@ -1,14 +1,14 @@
 import React, { useState, useEffect } from "react";
 import "./Dashboard.css";
 import "./components/ConnectedBanks.css";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import NotificationBanner from "./NotificationBanner";
 import { runActivitySync } from "./services/activitySyncService";
 import LedgerLogWidget from "./LedgerLogWidget";
 import ReviewQueueNavButton from "./ReviewQueueNavButton";
 import ConnectBankModal from "./components/ConnectBankModal.jsx";
-import { fetchConnectedAccounts } from "./services/bankService.js";
+import { fetchConnectedAccounts, fetchAccountTransactions } from "./services/bankService.js";
 
 const mergeStableList = (next, previous) => {
   // Background syncs can briefly return an incomplete page while Gmail data is
@@ -35,7 +35,63 @@ const toBankRow = (account, flow) => {
   };
 };
 
+const formatBankDate = (value) => {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return value || "";
+  return date.toLocaleDateString("en-NG", { day: "numeric", month: "short" });
+};
+
+const BankDetails = ({ accountId, refreshKey }) => {
+  const [state, setState] = useState({ loading: true, error: null, transactions: [] });
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchAccountTransactions(getSessionUserId(), accountId, { limit: 8 }).then((res) => {
+      if (cancelled) return;
+      setState(
+        res.status === "success"
+          ? { loading: false, error: null, transactions: res.data?.transactions || [] }
+          : { loading: false, error: res.error || "Could not load transactions.", transactions: [] }
+      );
+    });
+    return () => { cancelled = true; };
+  }, [accountId, refreshKey]);
+
+  return (
+    <div className="bank-details">
+      {state.loading && <p className="bank-details-muted">Loading transactions…</p>}
+      {!state.loading && state.error && <p className="bank-details-error" role="alert">{state.error}</p>}
+      {!state.loading && !state.error && state.transactions.length === 0 && (
+        <p className="bank-details-muted">No transactions yet. New alerts from this bank appear here after the next sync.</p>
+      )}
+      {state.transactions.length > 0 && (
+        <ul className="bank-details-list">
+          {state.transactions.map((tx) => {
+            const isCredit = tx.type === "credit";
+            return (
+              <li key={tx.id}>
+                <span className="bank-tx-copy">
+                  <strong>{tx.merchant || tx.description || "Transaction"}</strong>
+                  <small>{formatBankDate(tx.date)} · {tx.category || "Uncategorized"}</small>
+                </span>
+                <span className="bank-tx-amounts">
+                  <strong className={isCredit ? "flow-in" : "flow-out"}>{isCredit ? "+" : "-"}{formatBankCurrency(tx.amount)}</strong>
+                  {tx.balance_after ? <small>Bal {formatBankCurrency(tx.balance_after)}</small> : null}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <Link className="bank-details-link" to={`/accounts/${encodeURIComponent(accountId)}`}>
+        View full history <i className="fa-solid fa-arrow-right" aria-hidden="true" />
+      </Link>
+    </div>
+  );
+};
+
 const ConnectedBanks = ({ accounts, bankFlows, onAddBank }) => {
+  const [expandedId, setExpandedId] = useState(null);
   const flowById = new Map(bankFlows.map((flow) => [flow.id, flow]));
   const sources = accounts.length > 0 ? accounts : bankFlows;
   const rows = sources.map((account) => toBankRow(account, flowById.get(account.id)));
@@ -65,7 +121,8 @@ const ConnectedBanks = ({ accounts, bankFlows, onAddBank }) => {
         {rows.length > 0 ? (
           <div className="connected-banks-list">
             {rows.map((row) => (
-              <button type="button" className="connected-bank-card" key={row.id} onClick={() => window.location.assign(`/accounts/${encodeURIComponent(row.id)}`)}>
+              <div className={`connected-bank-item${expandedId === row.id ? " is-open" : ""}`} key={row.id}>
+              <button type="button" className="connected-bank-card" aria-expanded={expandedId === row.id} onClick={() => setExpandedId(expandedId === row.id ? null : row.id)}>
                 <span className="connected-bank-logo">{row.logo ? <img src={row.logo} alt="" /> : <i className="fa-solid fa-building-columns" aria-hidden="true" />}</span>
                 <span className="connected-bank-copy">
                   <strong>{row.name}</strong>
@@ -81,6 +138,8 @@ const ConnectedBanks = ({ accounts, bankFlows, onAddBank }) => {
                 </span>
                 <i className="fa-solid fa-chevron-right connected-bank-arrow" aria-hidden="true" />
               </button>
+              {expandedId === row.id && <BankDetails accountId={row.id} refreshKey={row.count} />}
+              </div>
             ))}
           </div>
         ) : <div className="connected-banks-empty"><p>No bank accounts connected yet.</p><button type="button" className="action-btn" onClick={onAddBank}>Connect your first bank</button></div>}
