@@ -49,6 +49,7 @@ from email_parser import (
     SUPPORTED_BANKS,
     get_connected_bank_accounts,
     email_belongs_to_bank,
+    resolve_bank_slug,
 )
 from business_logic import (
     get_exchange_rate,
@@ -744,6 +745,7 @@ async def get_dashboard_data(user_id: str = "default"):
         # in/out, and the combined total is the sum of those same rows so the
         # hero number can never disagree with the list beneath it.
         try:
+            _auto_connect_detected_banks(user_id, parsed_emails)
             connected_rows = get_connected_bank_accounts(user_id)
             connected_views = [_connected_account_view(r) for r in connected_rows]
             for row, view in zip(connected_rows, connected_views):
@@ -3169,6 +3171,60 @@ def _connected_account_view(row):
         "connected_at": meta.get("connected_at") or row.get("created_at"),
         "status": meta.get("status", "active"),
     }
+
+
+def _auto_connect_detected_banks(user_id, emails):
+    """Connect every bank that already sends this user alerts.
+
+    Banks are discovered from the synced alerts themselves, so the user never
+    has to add a bank by hand just to see one they already receive emails
+    from. Ids match the manual connect flow, so adding the same bank later
+    updates the row instead of duplicating it.
+    """
+    if not _is_real_user_id(user_id):
+        return False
+    detected = []
+    for email in emails:
+        if not (email.get("is_bank_alert") is True or email.get("is_bank_alert") == "true"):
+            continue
+        slug = email.get("bank_slug") or resolve_bank_slug(email.get("sender_email"))
+        if slug in SUPPORTED_BANKS and slug not in detected:
+            detected.append(slug)
+    if not detected:
+        return False
+
+    existing = database.get_accounts(user_id)
+    if existing["status"] != "success":
+        return False
+    known_ids = {row.get("id") for row in existing["data"]}
+    connected_slugs = {
+        (row.get("metadata") or {}).get("bank_slug") for row in get_connected_bank_accounts(user_id)
+    }
+
+    created = False
+    for slug in detected:
+        if slug in connected_slugs:
+            continue
+        digest = hashlib.sha256(f"{user_id}:{slug}:".encode()).hexdigest()[:12]
+        account_id = f"bank_{slug}_{digest}"
+        if account_id in known_ids:
+            continue
+        bank = SUPPORTED_BANKS[slug]
+        saved = database.add_account(
+            user_id=user_id, account_id=account_id,
+            account_name=bank["name"], currency="NGN",
+            document=f"Connected bank: {bank['name']}",
+            kind="connected_bank", bank_slug=slug, account_tail="",
+            nickname=bank["name"], type="Bank", status="active",
+            connected_at=datetime.utcnow().isoformat() + "Z",
+            auto_connected=True,
+        )
+        if saved["status"] == "success":
+            created = True
+            print(f"[Bank Connect] Auto-connected {bank['name']} for {user_id}")
+        else:
+            print(f"[Bank Connect] Auto-connect failed for {slug}: {saved['error']}")
+    return created
 
 
 def _alert_sort_key(email):
