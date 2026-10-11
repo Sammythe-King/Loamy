@@ -19,37 +19,72 @@ const mergeStableList = (next, previous) => {
 
 const getBankAccounts = (data) => data?.accounts || data?.data?.accounts || [];
 
-const ConnectedBanks = ({ accounts, onAddBank }) => {
-  const totalBalance = accounts.reduce((total, account) => total + Number(account.summary?.balance ?? account.balance ?? 0), 0);
+const toBankRow = (account, flow) => {
+  const summary = account.summary || {};
+  const balanceSource = flow ? flow.balance : summary.balance;
+  return {
+    id: account.id,
+    logo: flow?.logo ?? account.logo,
+    name: flow?.name || account.nickname || account.bank_name || account.account_name,
+    tail: flow?.account_tail ?? account.account_tail,
+    balance: Number(balanceSource ?? 0),
+    balanceKnown: flow ? flow.balance_known !== false : summary.balance != null,
+    cashIn: Number(flow ? flow.cash_in : summary.total_credits ?? 0),
+    cashOut: Number(flow ? flow.cash_out : summary.total_debits ?? 0),
+    count: flow ? flow.transaction_count : summary.transaction_count ?? 0,
+  };
+};
+
+const ConnectedBanks = ({ accounts, bankFlows, onAddBank }) => {
+  const flowById = new Map(bankFlows.map((flow) => [flow.id, flow]));
+  const sources = accounts.length > 0 ? accounts : bankFlows;
+  const rows = sources.map((account) => toBankRow(account, flowById.get(account.id)));
+  const totalBalance = rows.reduce((sum, row) => sum + row.balance, 0);
+  const totalIn = rows.reduce((sum, row) => sum + row.cashIn, 0);
+  const totalOut = rows.reduce((sum, row) => sum + row.cashOut, 0);
+  const hasUnknownBalance = rows.some((row) => !row.balanceKnown);
+
   return (
     <section className="dashboard-bank-hero" aria-labelledby="connected-banks-title">
       <div className="net-worth-hero">
-        <div>
-          <span className="net-worth-eyebrow"><i className="fa-solid fa-wallet" aria-hidden="true" /> Total Combined Net Worth</span>
+        <div className="net-worth-main">
+          <span className="net-worth-eyebrow"><i className="fa-solid fa-wallet" aria-hidden="true" /> Total across all banks</span>
           <strong>{formatBankCurrency(totalBalance)}</strong>
-          <small>Sum of all connected bank accounts</small>
+          <small>{rows.length > 0 ? `${rows.length} connected ${rows.length === 1 ? "bank" : "banks"}` : "Connect a bank to see your money"}</small>
         </div>
-        <i className="fa-solid fa-arrow-trend-up net-worth-icon" aria-hidden="true" />
+        <div className="net-worth-flows">
+          <div className="net-worth-flow"><span><i className="fa-solid fa-arrow-down" aria-hidden="true" /> Cash in</span><strong>{formatBankCurrency(totalIn)}</strong></div>
+          <div className="net-worth-flow"><span><i className="fa-solid fa-arrow-up" aria-hidden="true" /> Cash out</span><strong>{formatBankCurrency(totalOut)}</strong></div>
+        </div>
       </div>
       <div className="connected-banks-card">
         <div className="connected-banks-header">
-          <div><i className="fa-solid fa-building-columns" style={{ color: "#1976D2" }} aria-hidden="true" /><h3 id="connected-banks-title">Connected bank accounts</h3></div>
+          <div><i className="fa-solid fa-building-columns" style={{ color: "#1976D2" }} aria-hidden="true" /><h3 id="connected-banks-title">Cash flow by bank</h3></div>
           <button type="button" className="bank-add-btn" onClick={onAddBank}><i className="fa-solid fa-plus" aria-hidden="true" /> Add bank</button>
         </div>
-        {accounts.length > 0 ? (
+        {rows.length > 0 ? (
           <div className="connected-banks-list">
-            {accounts.map((account) => {
-              const balance = account.summary?.balance ?? account.balance ?? 0;
-              const count = account.summary?.transaction_count ?? account.transaction_count ?? account.transactions_count ?? 0;
-              return <button type="button" className="connected-bank-card" key={account.id} onClick={() => window.location.assign(`/accounts/${encodeURIComponent(account.id)}`)}>
-                <span className="connected-bank-logo">{account.logo ? <img src={account.logo} alt="" /> : <i className="fa-solid fa-building-columns" aria-hidden="true" />}</span>
-                <span className="connected-bank-copy"><strong>{account.nickname || account.bank_name || account.account_name}</strong><small>•••• {account.account_tail || "—"}</small></span>
-                <span className="connected-bank-balance"><strong>{formatBankCurrency(balance)}</strong><small>{count} transactions</small></span>
+            {rows.map((row) => (
+              <button type="button" className="connected-bank-card" key={row.id} onClick={() => window.location.assign(`/accounts/${encodeURIComponent(row.id)}`)}>
+                <span className="connected-bank-logo">{row.logo ? <img src={row.logo} alt="" /> : <i className="fa-solid fa-building-columns" aria-hidden="true" />}</span>
+                <span className="connected-bank-copy">
+                  <strong>{row.name}</strong>
+                  <small>•••• {row.tail || "—"} · {row.count} transactions</small>
+                  <span className="connected-bank-flow">
+                    <span className="flow-in">+{formatBankCurrency(row.cashIn)}</span>
+                    <span className="flow-out">-{formatBankCurrency(row.cashOut)}</span>
+                  </span>
+                </span>
+                <span className="connected-bank-balance">
+                  <strong>{row.balanceKnown ? formatBankCurrency(row.balance) : "Balance pending"}</strong>
+                  <small>{row.balanceKnown ? "Current balance" : "Awaiting next alert"}</small>
+                </span>
                 <i className="fa-solid fa-chevron-right connected-bank-arrow" aria-hidden="true" />
-              </button>;
-            })}
+              </button>
+            ))}
           </div>
         ) : <div className="connected-banks-empty"><p>No bank accounts connected yet.</p><button type="button" className="action-btn" onClick={onAddBank}>Connect your first bank</button></div>}
+        {hasUnknownBalance && <p className="connected-banks-note">Some banks have no balance yet. It appears as soon as a bank alert that includes your balance is read.</p>}
       </div>
     </section>
   );
@@ -57,11 +92,11 @@ const ConnectedBanks = ({ accounts, onAddBank }) => {
 
 const formatBankCurrency = (value) => `₦${Number(value || 0).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-const DashboardBankSection = ({ accounts, onAccountsChange }) => {
+const DashboardBankSection = ({ accounts, bankFlows = [], onAccountsChange }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   return (
     <>
-      <ConnectedBanks accounts={accounts} onAddBank={() => setIsModalOpen(true)} />
+      <ConnectedBanks accounts={accounts} bankFlows={bankFlows} onAddBank={() => setIsModalOpen(true)} />
       <ConnectBankModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
@@ -472,7 +507,7 @@ const Dashboard = () => {
 
   // `goals` still comes back from the API (backend untouched) but the
   // Savings & Goals UI is hidden for now, so it's intentionally not destructured.
-  const { cash_flow, expense_breakdown, recent_transactions, bank_transactions = [], needs_review = [], summary } = dashboardData;
+  const { expense_breakdown, recent_transactions, bank_transactions = [], needs_review = [], summary } = dashboardData;
   
   // Categorize a transaction that needs review
   const categorizeTransaction = async (transactionId, category) => {
@@ -555,39 +590,8 @@ const Dashboard = () => {
       <WhatsAppConnect />
 
       {/* Main Content Grid */}
-      <DashboardBankSection accounts={connectedAccounts} onAccountsChange={setConnectedAccounts} />
+      <DashboardBankSection accounts={connectedAccounts} bankFlows={dashboardData.bank_accounts || []} onAccountsChange={setConnectedAccounts} />
       <div className="dashboard-grid">
-        {/* Cash Flow Overview */}
-        <div className="card cashflow-card">
-          <div className="card-header">
-            <i className="fa-solid fa-wallet" style={{ color: "green" }}></i>
-            <h3>Cash Flow Overview</h3>
-          </div>
-          <div className="cashflow-grid">
-            <div className="cashflow-item cash-in">
-              <div className="cashflow-label">
-                <i className="fa-solid fa-arrow-down" style={{ color: "green" }}></i>
-                <span>Cash In</span>
-              </div>
-              <span className="cashflow-amount green">{formatCurrency(cash_flow.cash_in)}</span>
-            </div>
-            <div className="cashflow-item cash-out">
-              <div className="cashflow-label">
-                <i className="fa-solid fa-arrow-up" style={{ color: "red" }}></i>
-                <span>Cash Out</span>
-              </div>
-              <span className="cashflow-amount red">{formatCurrency(cash_flow.cash_out)}</span>
-            </div>
-            <div className="cashflow-item current-cash">
-              <div className="cashflow-label">
-                <i className="fa-solid fa-wallet" style={{ color: "green" }}></i>
-                <span>Current Balance</span>
-              </div>
-              <span className="cashflow-amount green">{formatCurrency(cash_flow.current_balance)}</span>
-            </div>
-          </div>
-        </div>
-
         {/* Business Runway */}
         <div className="card runway-card">
           <div className="card-header">

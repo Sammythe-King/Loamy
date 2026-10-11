@@ -578,6 +578,8 @@ async def get_dashboard_data(user_id: str = "default"):
         # 1. Get bank accounts from synced Gmail data
         accounts = []
         total_balance = 0
+        parsed_emails = []
+        bank_accounts = []  # Per connected bank: balance + cash in/out
         bank_transactions = []  # Track ALL bank transactions for dashboard
         needs_review = []  # Transfers without clear category
 
@@ -737,6 +739,42 @@ async def get_dashboard_data(user_id: str = "default"):
             print(f"[v0] Dashboard: Computed current_balance (total) = {total_balance}")
         except Exception as e:
             print(f"Error getting bank accounts: {e}")
+
+        # Per-bank view: every connected bank gets its own balance and cash
+        # in/out, and the combined total is the sum of those same rows so the
+        # hero number can never disagree with the list beneath it.
+        try:
+            for row in get_connected_bank_accounts(user_id):
+                view = _connected_account_view(row)
+                matched = [
+                    e for e in parsed_emails
+                    if email_belongs_to_bank(e, view["bank_slug"], view["account_tail"])
+                ]
+                bank_summary = _summarize_bank_emails(matched)
+                balance = bank_summary["balance"]
+                if balance is None:
+                    balance = row.get("balance")
+                bank_accounts.append({
+                    "id": view["id"],
+                    "name": view["nickname"] or view["bank_name"],
+                    "bank_name": view["bank_name"],
+                    "logo": view["logo"],
+                    "account_tail": view["account_tail"],
+                    "balance": float(balance or 0),
+                    "balance_known": balance is not None,
+                    "cash_in": bank_summary["total_credits"],
+                    "cash_out": bank_summary["total_debits"],
+                    "transaction_count": bank_summary["transaction_count"],
+                    "last_activity": bank_summary["last_activity"],
+                })
+            if bank_accounts:
+                total_balance = sum(b["balance"] for b in bank_accounts)
+                accounts = [
+                    {"name": b["name"], "balance": b["balance"], "currency": "NGN", "last_updated": b["last_activity"] or ""}
+                    for b in bank_accounts
+                ]
+        except Exception as e:
+            print(f"[v0] Dashboard: per-bank summary failed: {e}")
         
         # 2. Calculate cash flow from bank transactions
         cash_in = 0
@@ -861,6 +899,7 @@ async def get_dashboard_data(user_id: str = "default"):
         return {
             "status": "success",
             "accounts": accounts,
+            "bank_accounts": bank_accounts,
             "cash_flow": {
                 "cash_in": cash_in,
                 "cash_out": cash_out,
@@ -1346,6 +1385,20 @@ async def force_reparse_stored_email_data(user_id: str):
                 merged_emails.append(email)
                 skipped += 1
                 errors.append({"index": index, "id": email.get("id") if isinstance(email, dict) else None, "error": str(email_err)})
+
+        # Stored bodies from older syncs were cut off before the amount (heavy
+        # HTML/CSS), so nothing parses. Pull fresh, untruncated bodies from Gmail.
+        if updated == 0 and skipped > 0:
+            refresh_token = await asyncio.to_thread(_get_stored_refresh_token, user_id)
+            if refresh_token:
+                spawn_background_sync(user_id, force=True)
+                return {
+                    "status": "success",
+                    "message": "Stored email bodies were incomplete, so a full re-pull from Gmail was started. Call this URL again in about a minute.",
+                    "total_emails": len(emails),
+                    "resync_started": True,
+                    "errors": errors[:10],
+                }
 
         try:
             saved = database.save_gmail_data(user_id, merged_emails, (stored["data"] or {}).get("stats") or {})

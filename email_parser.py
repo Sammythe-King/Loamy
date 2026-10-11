@@ -832,33 +832,51 @@ async def _fetch_gmail_emails_core(data: dict):
 
 
 
+def _html_to_text(markup):
+    """Collapse HTML to readable text. <style>/<script> blocks are dropped
+    BEFORE any length limit so bank templates with heavy CSS (e.g. Wema/ALAT)
+    don't push the amount and balance past the truncation point."""
+    text = re.sub(r'(?is)<(style|script|head)\b[^>]*>.*?</\1>', ' ', markup or "")
+    text = re.sub(r'(?s)<!--.*?-->', ' ', text)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = html.unescape(text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _collect_body_parts(payload, found):
+    mime = (payload.get("mimeType") or "").lower()
+    data = (payload.get("body") or {}).get("data")
+    if data:
+        text = base64.urlsafe_b64decode(data).decode("utf-8", errors="ignore")
+        looks_html = "</" in text and "<" in text
+        if mime == "text/plain" and not looks_html:
+            found["plain"] = found["plain"] or text
+        elif mime == "text/html" or looks_html:
+            found["html"] = found["html"] or text
+        else:
+            found["plain"] = found["plain"] or text
+    for part in payload.get("parts") or []:
+        _collect_body_parts(part, found)
+
+
 def get_email_body(payload):
-    """Extract email body from Gmail payload (handles multipart)"""
-    import base64
-    
-    body = ""
-    
-    if "body" in payload and payload["body"].get("data"):
-        body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="ignore")
-    elif "parts" in payload:
-        for part in payload["parts"]:
-            if part.get("mimeType") == "text/plain" and part.get("body", {}).get("data"):
-                body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="ignore")
-                break
-            elif part.get("mimeType") == "text/html" and part.get("body", {}).get("data"):
-                # Fallback to HTML if no plain text
-                html_body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="ignore")
-                # Strip HTML tags for basic text extraction
-                body = re.sub(r'<[^>]+>', ' ', html_body)
-                body = re.sub(r'\s+', ' ', body).strip()
-            elif "parts" in part:
-                # Nested multipart
-                for subpart in part["parts"]:
-                    if subpart.get("body", {}).get("data"):
-                        body = base64.urlsafe_b64decode(subpart["body"]["data"]).decode("utf-8", errors="ignore")
-                        break
-    
-    return body[:5000]  # Limit to 5000 chars
+    """Extract email body text from a Gmail payload (any multipart depth)."""
+    found = {"plain": "", "html": ""}
+    try:
+        _collect_body_parts(payload, found)
+    except Exception as e:
+        print(f"[Email Body] Could not decode payload: {e}")
+
+    plain = (found["plain"] or "").strip()
+    html_text = _html_to_text(found["html"]) if found["html"] else ""
+
+    # Prefer plain text, but fall back to the HTML copy when the plain part is
+    # just a stub that is missing the transaction details.
+    if plain and not (html_text and re.search(r'amount', html_text, re.I) and not re.search(r'amount', plain, re.I)):
+        body = plain
+    else:
+        body = html_text or plain
+    return body[:5000]
 
 
 
@@ -1792,8 +1810,17 @@ def parse_wema_alert(email_body: str) -> dict:
             print(f"[Wema Parser] {getattr(fn, '__name__', 'helper')} failed: {e}")
             return default
 
-    amount_raw = _search(r"Transaction\s+Amount[^\d]*([\d,]+\.\d{2})\s*NGN")
-    balance_raw = _search(r"Current\s+Balance[^\d]*([\d,]+\.\d{2})\s*NGN")
+    # Money must have exactly two decimals and not sit inside a dotted date
+    # such as 11.10.2026, so dates before the balance are never mistaken for it.
+    money = r"(?<![\d.,])((?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2})(?![\d.])"
+    amount_raw = (
+        _search(r"Transaction\s+Amount[^\d]{0,40}?" + money)
+        or _search(r"\bAmount\s*:?[^\d]{0,40}?" + money)
+    )
+    balance_raw = (
+        _search(r"Current\s+Balance.{0,100}?" + money)
+        or _search(r"(?:Available|Ledger)\s+Balance.{0,100}?" + money)
+    )
     account_raw = _search(r"Account\s+Number\s*:\s*([^\s]+)")
     description_raw = _search(r"Description\s*:\s*(.*?)(?=Reference\s+Number|Transaction\s+Amount|$)")
     date_raw = _search(r"Transaction\s+Date\s*(?:&|and)?\s*Time\s*:\s*(.*?)(?=Value\s+Date|Current\s+Balance|$)")
