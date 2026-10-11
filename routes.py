@@ -1228,13 +1228,128 @@ async def reparse_stored_email_data(payload: dict):
 @router.get("/force-reparse/{user_id}")
 async def force_reparse_stored_email_data(user_id: str):
     """Force-reparse stored Wema emails without depending on the frontend."""
+    import traceback
+
     if not user_id or not _is_real_user_id(user_id):
         return {"status": "error", "error": "invalid_user_id"}
-    result = await reparse_stored_email_data({"user_id": user_id})
-    return {
-        **result,
-        "message": "Stored Wema emails reparsed successfully" if result.get("status") == "success" else "Stored email reparse failed",
-    }
+
+    try:
+        stored = database.get_gmail_data(user_id)
+        if stored.get("status") != "success" or not stored.get("data"):
+            return {"status": "error", "error": "no_stored_email_data"}
+
+        emails = (stored["data"] or {}).get("emails") or []
+        merged_emails = []
+        updated = 0
+        skipped = 0
+        transactions_upserted = 0
+        errors = []
+        latest_balance = None
+        latest_mask = None
+        latest_date = ""
+
+        for index, email in enumerate(emails):
+            if not isinstance(email, dict):
+                merged_emails.append(email)
+                skipped += 1
+                continue
+            try:
+                text = f"{email.get('subject', '')} {email.get('sender', '')} {email.get('from', '')} {email.get('bank_name', '')}".lower()
+                if not any(token in text for token in ("wema", "alat")):
+                    merged_emails.append(email)
+                    skipped += 1
+                    continue
+
+                parsed = reparse_stored_bank_email(email)
+                merged_emails.append(parsed)
+
+                amount = parsed.get("amount")
+                if amount is None or float(amount) <= 0:
+                    skipped += 1
+                    errors.append({"index": index, "id": email.get("id"), "error": "no_amount_extracted"})
+                    continue
+                updated += 1
+
+                source_id = str(
+                    parsed.get("id")
+                    or parsed.get("message_id")
+                    or hashlib.sha256(f"{index}{text}{amount}".encode()).hexdigest()[:24]
+                )
+                try:
+                    tx_result = database.add_transaction(
+                        user_id=user_id,
+                        tx_id=f"gmail_{source_id}",
+                        amount=amount,
+                        vendor=parsed.get("merchant") or parsed.get("subject") or "Bank transaction",
+                        description=parsed.get("merchant") or parsed.get("subject") or "Bank transaction",
+                        date=parsed.get("date") or parsed.get("received_at") or datetime.now().isoformat(),
+                        transaction_type=parsed.get("transaction_type") or "debit",
+                        source_id=source_id,
+                        source="gmail_bank_alert",
+                        original_currency=parsed.get("currency") or "NGN",
+                    )
+                    if isinstance(tx_result, dict) and tx_result.get("status") == "success":
+                        transactions_upserted += 1
+                    else:
+                        errors.append({"index": index, "id": source_id, "error": f"upsert_failed: {(tx_result or {}).get('error')}"})
+                except Exception as tx_err:
+                    errors.append({"index": index, "id": source_id, "error": f"upsert_exception: {tx_err}"})
+
+                balance = parsed.get("current_balance")
+                email_date = str(parsed.get("date") or "")
+                if balance is not None and email_date >= latest_date:
+                    latest_balance = balance
+                    latest_mask = parsed.get("account_number_mask") or latest_mask
+                    latest_date = email_date
+            except Exception as email_err:
+                print(f"[FORCE-REPARSE] Skipping email {index}: {email_err}")
+                merged_emails.append(email)
+                skipped += 1
+                errors.append({"index": index, "id": email.get("id") if isinstance(email, dict) else None, "error": str(email_err)})
+
+        try:
+            saved = database.save_gmail_data(user_id, merged_emails, (stored["data"] or {}).get("stats") or {})
+            if saved.get("status") != "success":
+                errors.append({"error": f"save_emails_failed: {saved.get('error')}"})
+        except Exception as save_err:
+            errors.append({"error": f"save_emails_exception: {save_err}"})
+
+        account_updated = False
+        if latest_balance is not None:
+            try:
+                for account in get_connected_bank_accounts(user_id):
+                    if "wema" not in (account.get("account_name") or "").lower():
+                        continue
+                    metadata = dict(account.get("metadata") or {})
+                    existing_mask = metadata.pop("account_number_mask", None)
+                    database.add_account(
+                        user_id=user_id,
+                        account_id=account["id"],
+                        account_name=account.get("account_name") or "Wema Bank",
+                        balance=latest_balance,
+                        currency=account.get("currency") or "NGN",
+                        document=account.get("document") or "Connected bank",
+                        account_number_mask=latest_mask or existing_mask,
+                        **metadata,
+                    )
+                    account_updated = True
+            except Exception as acct_err:
+                errors.append({"error": f"account_update_exception: {acct_err}"})
+
+        return {
+            "status": "success",
+            "message": f"Re-parsed {updated} Wema emails",
+            "total_emails": len(emails),
+            "emails_updated": updated,
+            "emails_skipped": skipped,
+            "transactions_upserted": transactions_upserted,
+            "account_updated": account_updated,
+            "current_balance": latest_balance,
+            "errors": errors[:50],
+        }
+    except Exception as e:
+        print(f"[FORCE-REPARSE] Fatal error: {e}\n{traceback.format_exc()}")
+        return {"status": "error", "data": None, "error": str(e)}
 
 
 @router.get("/review-queue/{user_id}")
