@@ -1022,7 +1022,9 @@ def parse_gmail_message_full(msg_data, allowed_bank_slugs=None, user_id=None):
                 "account_tail": account_tail,
                 "confidence": classification["confidence"],
                 "needs_review": bank_data.get("needs_review", False),
-                "true_up": true_up_info  # Will contain matched foreign transaction info if found
+                "true_up": true_up_info,  # Will contain matched foreign transaction info if found
+                # Kept so stored alerts can be re-parsed later without refetching from Gmail.
+                "raw_body": (body or "")[:4000],
             }
         else:
             # Regular receipt/transaction - try to extract amount from body
