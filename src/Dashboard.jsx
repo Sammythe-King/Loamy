@@ -59,7 +59,7 @@ const ConnectedBanks = ({ accounts, bankFlows, onAddBank }) => {
       </div>
       <div className="connected-banks-card">
         <div className="connected-banks-header">
-          <div><i className="fa-solid fa-building-columns" style={{ color: "#1976D2" }} aria-hidden="true" /><h3 id="connected-banks-title">Cash flow by bank</h3></div>
+          <div><i className="fa-solid fa-building-columns" style={{ color: "#1976D2" }} aria-hidden="true" /><h3 id="connected-banks-title">Your banks</h3></div>
           <button type="button" className="bank-add-btn" onClick={onAddBank}><i className="fa-solid fa-plus" aria-hidden="true" /> Add bank</button>
         </div>
         {rows.length > 0 ? (
@@ -668,33 +668,6 @@ const Dashboard = () => {
               <button onClick={() => handleNavigation("/invoices")} className="action-btn">
                 Create an invoice
               </button>
-            </div>
-          )}
-        </div>
-
-        {/* Recent Transactions */}
-        <div className="card transactions-card">
-          <div className="card-header">
-            <i className="fa-solid fa-receipt" style={{ color: "#9C27B0" }}></i>
-            <h3>Recent Transactions</h3>
-          </div>
-          {recent_transactions.length > 0 ? (
-            <div className="transactions-list">
-              {recent_transactions.slice(0, 5).map((tx, index) => (
-                <div key={index} className="transaction-item">
-                  <div className="transaction-info">
-                    <span className="transaction-desc">{tx.description?.substring(0, 25) || "Transaction"}</span>
-                    <span className="transaction-date">{formatDate(tx.date)} - {tx.category || tx.bank}</span>
-                  </div>
-                  <span className={`transaction-amount ${tx.type === "credit" ? "green" : "red"}`}>
-                    {tx.type === "credit" ? "+" : "-"}{formatTransactionAmount(tx)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="empty-state">
-              <p>No recent transactions found.</p>
             </div>
           )}
         </div>

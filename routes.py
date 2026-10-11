@@ -744,15 +744,13 @@ async def get_dashboard_data(user_id: str = "default"):
         # in/out, and the combined total is the sum of those same rows so the
         # hero number can never disagree with the list beneath it.
         try:
-            for row in get_connected_bank_accounts(user_id):
-                view = _connected_account_view(row)
-                matched = [
-                    e for e in parsed_emails
-                    if email_belongs_to_bank(e, view["bank_slug"], view["account_tail"])
-                ]
+            connected_rows = get_connected_bank_accounts(user_id)
+            connected_views = [_connected_account_view(r) for r in connected_rows]
+            for row, view in zip(connected_rows, connected_views):
+                matched = _emails_for_connected_account(parsed_emails, view, connected_views)
                 bank_summary = _summarize_bank_emails(matched)
                 balance = bank_summary["balance"]
-                if balance is None:
+                if balance is None and _safe_float(row.get("balance")) > 0:
                     balance = row.get("balance")
                 bank_accounts.append({
                     "id": view["id"],
@@ -3177,15 +3175,40 @@ def _alert_sort_key(email):
     return (email.get("internal_date_ms") or 0, email.get("date") or "")
 
 
+def _safe_float(value):
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _emails_for_connected_account(emails, view, all_views):
+    """Alerts belonging to one connected bank.
+
+    The account tail only narrows the match when the user has several accounts
+    at the same bank; otherwise a tail formatted differently in the alert would
+    hide every transaction. A lone connected bank falls back to all bank alerts.
+    """
+    same_bank = [v for v in all_views if v["bank_slug"] == view["bank_slug"]]
+    tail = view["account_tail"] if len(same_bank) > 1 else ""
+    matched = [e for e in emails if email_belongs_to_bank(e, view["bank_slug"], tail)]
+    if len(all_views) == 1 and not any(_safe_float(e.get("amount")) > 0 for e in matched):
+        matched = [e for e in emails if e.get("is_bank_alert") is True or e.get("is_bank_alert") == "true"]
+    return matched
+
+
 def _summarize_bank_emails(emails):
-    credits = sum(float(e.get("amount") or 0) for e in emails if e.get("transaction_type") == "credit")
-    debits = sum(float(e.get("amount") or 0) for e in emails if e.get("transaction_type") == "debit")
+    # Login/security notices carry no amount; they are not transactions.
+    emails = [e for e in emails if _safe_float(e.get("amount")) > 0]
+    credits = sum(_safe_float(e.get("amount")) for e in emails if e.get("transaction_type") == "credit")
+    debits = sum(_safe_float(e.get("amount")) for e in emails if e.get("transaction_type") != "credit")
     latest_balance = None
     last_activity = None
     for email in sorted(emails, key=_alert_sort_key, reverse=True):
         last_activity = last_activity or email.get("date")
-        if email.get("balance") is not None:
-            latest_balance = email.get("balance")
+        balance = _safe_float(email.get("balance"))
+        if balance > 0:
+            latest_balance = balance
             break
     return {
         "balance": latest_balance,
@@ -3253,9 +3276,9 @@ async def list_connected_accounts(user_id: str = "default"):
     emails = load_user_emails(user_id) if rows else []
 
     accounts = []
-    for row in rows:
-        view = _connected_account_view(row)
-        matched = [e for e in emails if email_belongs_to_bank(e, view["bank_slug"], view["account_tail"])]
+    all_views = [_connected_account_view(row) for row in rows]
+    for view in all_views:
+        matched = _emails_for_connected_account(emails, view, all_views)
         view["summary"] = _summarize_bank_emails(matched)
         accounts.append(view)
 
@@ -3288,7 +3311,11 @@ async def get_connected_account_transactions(
         raise HTTPException(status_code=400, detail="type must be 'debit' or 'credit'")
     limit = max(1, min(limit, 500))
 
-    matched = [e for e in load_user_emails(user_id) if email_belongs_to_bank(e, view["bank_slug"], view["account_tail"])]
+    all_views = [_connected_account_view(r) for r in get_connected_bank_accounts(user_id)]
+    matched = [
+        e for e in _emails_for_connected_account(load_user_emails(user_id), view, all_views)
+        if _safe_float(e.get("amount")) > 0
+    ]
     filtered = [
         e for e in matched
         if (not tx_type or e.get("transaction_type") == tx_type)
