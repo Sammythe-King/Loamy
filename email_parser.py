@@ -378,6 +378,14 @@ async def run_server_side_gmail_sync(user_id, force=False):
 
 _active_bg_syncs = set()
 _active_bg_syncs_lock = threading.Lock()
+_server_sync_started_at = {}
+_server_sync_results = {}
+STALE_SYNC_SECONDS = 5 * 60
+
+
+def get_last_server_sync_result(user_id):
+    """Outcome of the most recent server-side sync for a user, or None."""
+    return _server_sync_results.get(user_id)
 
 
 def spawn_background_sync(user_id, force=False):
@@ -393,19 +401,34 @@ def spawn_background_sync(user_id, force=False):
     entirely off the request path. The in-flight guard stops overlapping dashboard
     loads from stacking duplicate syncs for the same user.
     """
+    now = datetime.now().timestamp()
     with _active_bg_syncs_lock:
         if user_id in _active_bg_syncs:
-            return
+            started = _server_sync_started_at.get(user_id)
+            # A sync that has been "running" for minutes is hung; without this
+            # check one stuck thread silently blocks every later sync forever.
+            if started is None or (now - started) < STALE_SYNC_SECONDS:
+                print(f"[Server Sync] {user_id}: sync already in flight, skipping (force={force})")
+                return
+            print(f"[Server Sync] {user_id}: previous sync looks hung, starting a new one")
         _active_bg_syncs.add(user_id)
+        _server_sync_started_at[user_id] = now
 
     def _runner():
+        result = {"synced": False, "reason": "unknown"}
         try:
-            asyncio.run(run_server_side_gmail_sync(user_id, force=force))
+            result = asyncio.run(run_server_side_gmail_sync(user_id, force=force)) or result
         except Exception as e:
             print(f"[Server Sync] background thread error for {user_id}: {e}")
+            result = {"synced": False, "reason": str(e)}
         finally:
+            result["finished_at"] = datetime.now().isoformat()
+            result["forced"] = force
+            _server_sync_results[user_id] = result
+            print(f"[Server Sync] {user_id}: finished -> {result}")
             with _active_bg_syncs_lock:
                 _active_bg_syncs.discard(user_id)
+                _server_sync_started_at.pop(user_id, None)
 
     threading.Thread(target=_runner, daemon=True, name=f"gmailsync-{user_id}").start()
 
@@ -2270,9 +2293,12 @@ async def _sync_gmail_data_core(data: dict):
         try:
             mirror = database.save_gmail_data(user_id, emails, stats)
             if mirror["status"] != "success":
-                print(f"[sync-gmail] Supabase mirror failed: {mirror['error']}")
+                print(
+                    f"[sync-gmail] SUPABASE MIRROR FAILED for {user_id} - the dashboard reads "
+                    f"Supabase first and will keep showing old data: {mirror['error']}"
+                )
         except Exception as e:
-            print(f"[sync-gmail] Supabase mirror exception: {e}")
+            print(f"[sync-gmail] SUPABASE MIRROR EXCEPTION for {user_id}: {e}")
 
         print(
             f"Gmail data synced for user {user_id}: {new_count} new, "

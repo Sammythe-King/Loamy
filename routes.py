@@ -81,6 +81,7 @@ from email_parser import (
     _mark_server_sync,
     run_server_side_gmail_sync,
     spawn_background_sync,
+    get_last_server_sync_result,
     maybe_autosync_all_users,
     get_last_synced_timestamp,
     set_last_synced_timestamp,
@@ -1248,12 +1249,34 @@ async def force_reparse_stored_email_data(user_id: str):
             for e in emails
         )
         if not has_bodies:
+            # Check the two things that make a background resync silently do
+            # nothing, so the caller gets a real reason instead of "started".
+            refresh_token = await asyncio.to_thread(_get_stored_refresh_token, user_id)
+            if not refresh_token:
+                return {
+                    "status": "error",
+                    "error": "no_gmail_refresh_token",
+                    "message": "The backend has no stored Gmail refresh token for this user, so it cannot re-pull emails. Open the Gmail page and reconnect Gmail once, then call this endpoint again.",
+                    "total_emails": len(emails),
+                    "resync_started": False,
+                }
+            access_token = await asyncio.to_thread(_mint_access_token, refresh_token)
+            if not access_token:
+                return {
+                    "status": "error",
+                    "error": "gmail_token_rejected",
+                    "message": "Google rejected the stored refresh token (expired or revoked). Reconnect Gmail on the Gmail page, then call this endpoint again.",
+                    "total_emails": len(emails),
+                    "resync_started": False,
+                }
+
             spawn_background_sync(user_id, force=True)
             return {
                 "status": "success",
-                "message": "Stored emails have no body to re-parse. Started a full Gmail resync instead; reload the dashboard in about a minute.",
+                "message": "Gmail token is valid. Full resync started in the background; call this same URL again in about a minute and check last_sync_result.",
                 "total_emails": len(emails),
                 "resync_started": True,
+                "last_sync_result": get_last_server_sync_result(user_id),
             }
 
         merged_emails = []
