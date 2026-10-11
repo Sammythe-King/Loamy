@@ -1733,26 +1733,58 @@ _WEMA_LABELS = {
 
 def parse_wema_alert(email_body: str) -> dict:
     """Parse the Wema/ALAT HTML alert layout before generic extraction runs."""
-    clean_body = html.unescape(re.sub(r"<[^>]+>", " ", email_body or ""))
-    clean_body = re.sub(r"\s+", " ", clean_body).strip()
-
-    amount_match = re.search(r"Transaction\s+Amount[^\d]*([\d,]+\.\d{2})\s*NGN", clean_body, re.IGNORECASE)
-    balance_match = re.search(r"Current\s+Balance[^\d]*([\d,]+\.\d{2})\s*NGN", clean_body, re.IGNORECASE)
-    account_match = re.search(r"Account\s+Number\s*:\s*([^\s]+)", clean_body, re.IGNORECASE)
-    description_match = re.search(r"Description\s*:\s*(.*?)(?=Reference\s+Number|Transaction\s+Amount)", clean_body, re.IGNORECASE)
-    date_match = re.search(r"Transaction\s+Date\s*(?:&|and)?\s*Time\s*:\s*(.*?)(?=Value\s+Date|Current\s+Balance)", clean_body, re.IGNORECASE)
-    raw_description = description_match.group(1).strip() if description_match else ""
-    merchant = re.sub(r"^POS\\s+Buy\\s+on\\s+\\d{2}-\\d{2}-\\d{4}@", "", raw_description, flags=re.IGNORECASE)
-    merchant = re.sub(r"^POS\\s+Buy\\s+on\\s+[^@]+@", "", merchant, flags=re.IGNORECASE)
-    return {
-        "amount": _to_float(amount_match.group(1)) if amount_match else None,
-        "type": _detect_tx_type("", body),
-        "account_tail": _account_tail(account_match.group(1) if account_match else ""),
-        "account_number_mask": account_match.group(1).strip() if account_match else "",
-        "merchant": merchant.strip(),
-        "date": _normalize_alert_date(date_match.group(1) if date_match else ""),
+    empty = {
+        "amount": None,
+        "type": None,
+        "account_tail": "",
+        "account_number_mask": "",
+        "merchant": "",
+        "date": "",
         "currency": "NGN",
-        "balance": _to_float(balance_match.group(1)) if balance_match else None,
+        "balance": None,
+    }
+    try:
+        clean_body = html.unescape(re.sub(r"<[^>]+>", " ", str(email_body or "")))
+        clean_body = re.sub(r"\s+", " ", clean_body).strip()
+    except Exception as e:
+        print(f"[Wema Parser] Could not clean body: {e}")
+        return empty
+    if not clean_body:
+        return empty
+
+    def _search(pattern, flags=re.IGNORECASE):
+        try:
+            match = re.search(pattern, clean_body, flags)
+            return match.group(1).strip() if match and match.group(1) else ""
+        except Exception as e:
+            print(f"[Wema Parser] Pattern failed ({pattern[:30]}...): {e}")
+            return ""
+
+    def _safe(fn, *args, default=None):
+        try:
+            return fn(*args)
+        except Exception as e:
+            print(f"[Wema Parser] {getattr(fn, '__name__', 'helper')} failed: {e}")
+            return default
+
+    amount_raw = _search(r"Transaction\s+Amount[^\d]*([\d,]+\.\d{2})\s*NGN")
+    balance_raw = _search(r"Current\s+Balance[^\d]*([\d,]+\.\d{2})\s*NGN")
+    account_raw = _search(r"Account\s+Number\s*:\s*([^\s]+)")
+    description_raw = _search(r"Description\s*:\s*(.*?)(?=Reference\s+Number|Transaction\s+Amount|$)")
+    date_raw = _search(r"Transaction\s+Date\s*(?:&|and)?\s*Time\s*:\s*(.*?)(?=Value\s+Date|Current\s+Balance|$)")
+    type_raw = _search(r"Transaction\s+Type\s*:\s*(\w+)")
+
+    merchant = re.sub(r"^POS\s+Buy\s+on\s+[^@]+@", "", description_raw, flags=re.IGNORECASE).strip()
+
+    return {
+        "amount": _safe(_to_float, amount_raw),
+        "type": _safe(_detect_tx_type, type_raw, clean_body),
+        "account_tail": _safe(_account_tail, account_raw, default=""),
+        "account_number_mask": account_raw,
+        "merchant": merchant,
+        "date": _safe(_normalize_alert_date, date_raw, default=""),
+        "currency": "NGN",
+        "balance": _safe(_to_float, balance_raw),
     }
 
 
@@ -1774,7 +1806,11 @@ def reparse_stored_bank_email(email: dict) -> dict:
     text = f"{email.get('subject', '')}\n{body}"
     bank_name = (email.get("bank_name") or email.get("sender") or email.get("from") or "").lower()
     parser = parse_wema_alert if any(token in text.lower() + bank_name for token in ("wema", "alat")) else parse_firstbank_alert
-    parsed = parser(text)
+    try:
+        parsed = parser(text) or {}
+    except Exception as e:
+        print(f"[Reparse] {parser.__name__} failed for email {email.get('id')}: {e}")
+        parsed = {}
     return {
         **email,
         "amount": parsed.get("amount") if parsed.get("amount") is not None else email.get("amount"),
