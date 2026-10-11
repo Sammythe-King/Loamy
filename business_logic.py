@@ -536,32 +536,45 @@ def load_user_emails(user_id: str) -> list:
     ChromaDB blob so nothing breaks in the meantime - the next /sync-gmail-data
     mirrors into Supabase and this fallback stops being needed.
     """
+    supabase_emails = []
+    supabase_synced_at = ""
     # 1) Supabase first.
     try:
         res = database.get_gmail_data(user_id)
         if res["status"] == "success" and res["data"]:
-            emails = res["data"].get("emails") or []
-            if emails:
-                return emails
+            supabase_emails = res["data"].get("emails") or []
+            supabase_synced_at = str(res["data"].get("synced_at") or "")
     except Exception as e:
         print(f"[v0] load_user_emails Supabase read failed: {e}")
 
-    # 2) Fallback: local ChromaDB blob.
+    # 2) Local ChromaDB blob. If a sync's Supabase mirror write failed, Chroma
+    # holds the newer data while Supabase stays frozen on the old copy, so the
+    # fresher of the two wins instead of Supabase always winning.
+    chroma_emails = []
+    chroma_synced_at = ""
     try:
         chroma = gmail_data_collection.get(ids=[f"gmail_{user_id}"])
-        parsed = []
         for i in range(len(chroma.get('ids', []))):
             doc = chroma['documents'][i]
             if not doc:
                 continue
             try:
-                parsed.extend(json.loads(doc).get("emails", []))
+                chroma_emails.extend(json.loads(doc).get("emails", []))
             except Exception:
                 continue
-        return parsed
+            meta = (chroma.get('metadatas') or [None] * (i + 1))[i] or {}
+            chroma_synced_at = max(chroma_synced_at, str(meta.get("synced_at") or ""))
     except Exception as e:
-        print(f"[v0] load_user_emails ChromaDB fallback failed: {e}")
-        return []
+        print(f"[v0] load_user_emails ChromaDB read failed: {e}")
+
+    if supabase_emails and chroma_emails:
+        # Timestamps are naive ISO strings from the same server clock, so a plain
+        # string comparison orders them correctly.
+        if chroma_synced_at and supabase_synced_at and chroma_synced_at[:19] > supabase_synced_at[:19]:
+            print(f"[v0] load_user_emails: ChromaDB ({chroma_synced_at}) is newer than Supabase ({supabase_synced_at}) for {user_id}")
+            return chroma_emails
+        return supabase_emails
+    return supabase_emails or chroma_emails
 
 
 
