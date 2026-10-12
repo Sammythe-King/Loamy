@@ -1,5 +1,5 @@
 const BANK_DOMAINS = [
-  { match: ["first bank", "firstbank", "firstalert", "fbn"], domain: "firstbanknigeria.com", alternates: ["firstbankgroup.com"] },
+  { match: ["first bank", "firstbank", "firstalert", "fbn"], domain: "firstbankgroup.com", alternates: ["firstbanknigeria.com"] },
   { match: ["wema", "alat"], domain: "wemabank.com" },
   { match: ["gtbank", "gtb", "guaranty", "gt bank"], domain: "gtbank.com" },
   { match: ["zenith"], domain: "zenithbank.com" },

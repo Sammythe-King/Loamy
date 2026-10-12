@@ -75,6 +75,14 @@ const ChatPage = () => {
     
     const chatDisplayRef = useRef(null);
     const fileInputRef = useRef(null);
+    const inputRef = useRef(null);
+
+    useEffect(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        el.style.height = "auto";
+        el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    }, [inputText]);
 
     // Check session on mount
     useEffect(() => {
@@ -776,12 +784,19 @@ const createNewChat = async (title) => {
                         >
                             <FontAwesomeIcon icon={faEnvelope} />
                         </button>
-                        <input 
-                            type="text" 
+                        <textarea
+                            ref={inputRef}
+                            rows={1}
+                            className="chat-textarea"
                             placeholder="Ask your financial advisor..."
                             value={inputText}
                             onChange={(e) => setInputText(e.target.value)}
-                            onKeyPress={(e) => e.key === "Enter" && handleSubmit(e)}
+                            onKeyDown={(e) => {
+                                if (e.key !== "Enter" || e.shiftKey) return;
+                                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                                e.preventDefault();
+                                handleSubmit(e);
+                            }}
                         />
                         <button type="submit" className="send-btn" disabled={isLoading}>
                             <FontAwesomeIcon icon={faArrowUp} />

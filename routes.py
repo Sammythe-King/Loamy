@@ -530,13 +530,13 @@ async def cleanup_gmail_data():
 
 @router.get("/ledger-log/{user_id}")
 async def get_ledger_log(user_id: str, limit: int = 8):
-    """Recent WhatsApp cash entries and scanned receipts (source IN
-    manual_cash, receipt) for the dashboard's log widget."""
+    """Recent entries the user logged by texting Loamy on WhatsApp (source =
+    manual_cash). Receipts and bank alerts are deliberately excluded."""
     if not _is_real_user_id(user_id):
         return {"status": "error", "data": None, "error": "invalid_user_id"}
     try:
         rows = await asyncio.to_thread(load_ledger_transactions, user_id)
-        items = [r for r in rows if r.get("source") in ("manual_cash", "receipt")]
+        items = [r for r in rows if r.get("source") == "manual_cash"]
         items.sort(key=lambda r: r.get("internal_date_ms") or 0, reverse=True)
         return {
             "status": "success",
