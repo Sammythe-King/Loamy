@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { bankInitials, resolveBankLogoSources } from "../utils/bankLogo";
 
-const GENERIC_FAVICON = /google\.com\/s2\/favicons/;
+const GENERIC_FAVICON = /(google\.com|googleusercontent\.com)\/s2\/favicons/;
+const PLACEHOLDER_MAX_WIDTH = 16;
 
 /*
- * BankLogo - official bank logo resolved from the bank name.
- * Tries each resolved source in order, then falls back to initials. A backend
- * logo is only used when the name is unknown and it is not a Google favicon
- * (those return a generic globe for banks they cannot find).
+ * BankLogo - bank logo resolved from the bank name via the Google favicon service.
+ * Tries each resolved source in order (skipping load errors and the 16px
+ * placeholder globe), then falls back to initials. A backend logo is only used
+ * when the name is unknown and it is not a Google favicon.
  */
 const BankLogo = ({ name, slug, backendLogo, className = "", imgClassName = "", size = 28 }) => {
   const resolved = resolveBankLogoSources(name, slug);
@@ -36,6 +37,9 @@ const BankLogo = ({ name, slug, backendLogo, className = "", imgClassName = "", 
       loading="lazy"
       referrerPolicy="no-referrer"
       onError={() => setIndex((i) => i + 1)}
+      onLoad={(event) => {
+        if (event.currentTarget.naturalWidth <= PLACEHOLDER_MAX_WIDTH) setIndex((i) => i + 1);
+      }}
     />
   );
 };
