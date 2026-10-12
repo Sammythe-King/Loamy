@@ -1,5 +1,5 @@
 const BANK_DOMAINS = [
-  { match: ["first bank", "firstbank", "firstalert", "fbn"], domain: "firstbanknigeria.com" },
+  { match: ["first bank", "firstbank", "firstalert", "fbn"], domain: "firstbanknigeria.com", alternates: ["firstbankgroup.com"] },
   { match: ["wema", "alat"], domain: "wemabank.com" },
   { match: ["gtbank", "gtb", "guaranty", "gt bank"], domain: "gtbank.com" },
   { match: ["zenith"], domain: "zenithbank.com" },
@@ -21,22 +21,24 @@ const BANK_DOMAINS = [
   { match: ["providus"], domain: "providusbank.com" },
 ];
 
-export const resolveBankDomain = (...names) => {
+const findBank = (names) => {
   const haystack = names.filter(Boolean).join(" ").toLowerCase();
   if (!haystack) return null;
-  const hit = BANK_DOMAINS.find(({ match }) => match.some((key) => haystack.includes(key)));
-  return hit ? hit.domain : null;
+  return BANK_DOMAINS.find(({ match }) => match.some((key) => haystack.includes(key))) || null;
 };
+
+export const resolveBankDomain = (...names) => findBank(names)?.domain ?? null;
 
 export const googleFaviconUrl = (domain) =>
   `https://s2.googleusercontent.com/s2/favicons?domain=${domain}&sz=128`;
 
-// Ordered fallbacks; the BankLogo component advances on load errors and on
-// Google's 16px placeholder globe, which it returns with a 200 for unknown domains.
+// Google is the only source: it returns a 16px placeholder for domains it has
+// no icon for, which BankLogo skips. DuckDuckGo is deliberately not used because
+// its placeholder is a full-size grey circle that cannot be told apart from a real logo.
 export const resolveBankLogoSources = (...names) => {
-  const domain = resolveBankDomain(...names);
-  if (!domain) return [];
-  return [googleFaviconUrl(domain), `https://icons.duckduckgo.com/ip3/${domain}.ico`];
+  const bank = findBank(names);
+  if (!bank) return [];
+  return [bank.domain, ...(bank.alternates || [])].map(googleFaviconUrl);
 };
 
 export const bankInitials = (name = "") =>
