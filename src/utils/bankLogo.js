@@ -28,16 +28,15 @@ export const resolveBankDomain = (...names) => {
   return hit ? hit.domain : null;
 };
 
-// Ordered fallbacks; the BankLogo component advances on image load errors.
-// Google's favicon service is deliberately excluded: it answers 200 with a
-// generic globe for unknown domains, so an error handler can never catch it.
+export const googleFaviconUrl = (domain) =>
+  `https://s2.googleusercontent.com/s2/favicons?domain=${domain}&sz=128`;
+
+// Ordered fallbacks; the BankLogo component advances on load errors and on
+// Google's 16px placeholder globe, which it returns with a 200 for unknown domains.
 export const resolveBankLogoSources = (...names) => {
   const domain = resolveBankDomain(...names);
   if (!domain) return [];
-  return [
-    `https://logo.clearbit.com/${domain}?size=128`,
-    `https://icons.duckduckgo.com/ip3/${domain}.ico`,
-  ];
+  return [googleFaviconUrl(domain), `https://icons.duckduckgo.com/ip3/${domain}.ico`];
 };
 
 export const bankInitials = (name = "") =>
