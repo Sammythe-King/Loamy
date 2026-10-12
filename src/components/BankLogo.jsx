@@ -6,8 +6,9 @@ const PLACEHOLDER_MAX_WIDTH = 16;
 
 /*
  * BankLogo - bank logo resolved from the bank name via the Google favicon service.
- * Tries each resolved source in order (skipping load errors and the 16px
- * placeholder globe), then falls back to initials. A backend logo is only used
+ * Tries each resolved source in order (skipping load errors and Google's 16px
+ * placeholder, which it serves with a 404 that browsers still render), then
+ * falls back to initials. A backend logo is only used
  * when the name is unknown and it is not a Google favicon.
  */
 const BankLogo = ({ name, slug, backendLogo, className = "", imgClassName = "", size = 28 }) => {

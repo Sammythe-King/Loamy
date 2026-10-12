@@ -17,7 +17,12 @@ from datetime import datetime, timedelta
 
 import database
 import categorizer
-from business_logic import compute_bank_snapshot, load_ledger_transactions
+from business_logic import (
+    compute_bank_snapshot,
+    load_ledger_transactions,
+    find_matching_pending_conversion,
+    true_up_conversion,
+)
 from models import (
     model,
     gmail_data_collection,
@@ -2271,13 +2276,25 @@ async def _sync_gmail_data_core(data: dict):
         # Instead, load what's already stored and merge the new emails in,
         # deduping by email id.
         existing_emails = []
-        try:
-            prev = gmail_data_collection.get(ids=[doc_id])
-            if prev["documents"]:
-                prev_doc = json.loads(prev["documents"][0])
-                existing_emails = prev_doc.get("emails", [])
-        except Exception as e:
-            print(f"[Sync] No existing Gmail blob to merge (starting fresh): {e}")
+        read_error = None
+        for attempt in range(3):
+            try:
+                prev = gmail_data_collection.get(ids=[doc_id])
+                if prev["documents"]:
+                    prev_doc = json.loads(prev["documents"][0])
+                    existing_emails = prev_doc.get("emails", [])
+                read_error = None
+                break
+            except Exception as e:
+                read_error = e
+                await asyncio.sleep(0.4 * (attempt + 1))
+
+        # A failed read is not the same as "no blob yet". Writing a merge built on
+        # an empty list would replace the whole stored history with just this
+        # sync's emails, so abort and let the next sync retry.
+        if read_error is not None:
+            print(f"[Sync] Could not read existing Gmail blob, skipping write to avoid data loss: {read_error}")
+            return {"status": "error", "error": f"storage temporarily unavailable: {read_error}"}
 
         merged_by_id = {}
         for e in existing_emails:
