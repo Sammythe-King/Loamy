@@ -39,6 +39,7 @@ from business_logic import (
     compute_bank_snapshot,
     format_snapshot_for_ai,
     load_user_emails,
+    load_ledger_transactions,
     get_exchange_rate,
     convert_to_local_currency,
     normalize_category,
@@ -201,6 +202,141 @@ def build_financial_snapshot(user_id: str) -> str:
         print(f"[chat_service] snapshot unavailable for {user_id}: {res.get('error')}")
         return ""
     return _format_context(res["data"])
+
+
+def _naira(value) -> str:
+    return f"₦{float(value or 0):,.2f}"
+
+
+def build_wealth_context(user_id: str, tx_limit: int = 40) -> str:
+    """Multi-bank wealth snapshot as prompt-ready text.
+
+    Combines the total balance, a per-bank breakdown (balance, cash in/out,
+    activity) and one merged ledger of recent transactions tagged with the bank
+    they belong to. Uses the same per-bank matching as the dashboard so the
+    chat can never disagree with the bank cards.
+    """
+    try:
+        # Lazy import: routes imports this module at load time.
+        import routes as _routes
+        from email_parser import get_connected_bank_accounts
+
+        emails = load_user_emails(user_id)
+        try:
+            _routes._auto_connect_detected_banks(user_id, emails)
+        except Exception as e:
+            print(f"[chat_service] auto-connect skipped: {e}")
+
+        rows = get_connected_bank_accounts(user_id)
+        views = [_routes._connected_account_view(r) for r in rows]
+        if not views:
+            snap = compute_bank_snapshot(user_id)
+            return "=== MONEY SNAPSHOT ===\n" + format_snapshot_for_ai(snap)
+
+        bank_lines = []
+        pool = []
+        total_balance = 0.0
+        unknown_banks = []
+        for row, view in zip(rows, views):
+            matched = _routes._emails_for_connected_account(emails, view, views)
+            summary = _routes._summarize_bank_emails(matched)
+            balance = summary["balance"]
+            if balance is None and _routes._safe_float(row.get("balance")) > 0:
+                balance = row.get("balance")
+            label = view["nickname"] or view["bank_name"] or "Bank"
+            tail = f" (account ending {view['account_tail']})" if view["account_tail"] else ""
+            if balance is None:
+                unknown_banks.append(label)
+                balance_text = "balance not yet reported by this bank's alerts"
+            else:
+                total_balance += float(balance)
+                balance_text = f"balance {_naira(balance)}"
+            bank_lines.append(
+                f"- {label}{tail}: {balance_text} | money in {_naira(summary['total_credits'])} | "
+                f"money out {_naira(summary['total_debits'])} | {summary['transaction_count']} transactions | "
+                f"last activity {summary['last_activity'] or 'unknown'}"
+            )
+            for e in matched:
+                amount = _routes._safe_float(e.get("amount"))
+                if amount <= 0:
+                    continue
+                pool.append({
+                    "date": e.get("date") or "",
+                    "ms": int(e.get("internal_date_ms") or 0),
+                    "bank": label,
+                    "type": "credit" if e.get("transaction_type") == "credit" else "debit",
+                    "amount": amount,
+                    "merchant": str(e.get("narration") or e.get("subject") or "Transaction")[:60],
+                    "category": normalize_category(e.get("category") or "Other") or "Other",
+                })
+
+        # Cash entries and scanned receipts live outside any bank. Logged bank
+        # alerts are skipped because the alert emails above already cover them.
+        cash_total_out = 0.0
+        for r in load_ledger_transactions(user_id):
+            if r.get("source") == "bank_alert":
+                continue
+            pool.append({
+                "date": r["date"], "ms": r["internal_date_ms"], "bank": r["bank"],
+                "type": r["type"], "amount": r["amount"],
+                "merchant": str(r["description"])[:60], "category": r["category"],
+            })
+            if r["type"] != "credit":
+                cash_total_out += r["amount"]
+
+        pool.sort(key=lambda t: (t["ms"], t["date"]), reverse=True)
+
+        by_category, by_merchant = {}, {}
+        money_in = money_out = 0.0
+        for t in pool:
+            if t["type"] == "credit":
+                money_in += t["amount"]
+                continue
+            money_out += t["amount"]
+            by_category[t["category"]] = by_category.get(t["category"], 0) + t["amount"]
+            key = t["merchant"].strip().lower()
+            entry = by_merchant.setdefault(key, {"name": t["merchant"], "total": 0.0, "count": 0})
+            entry["total"] += t["amount"]
+            entry["count"] += 1
+
+        category_lines = "\n".join(
+            f"  - {c}: {_naira(a)}" for c, a in sorted(by_category.items(), key=lambda kv: -kv[1])
+        ) or "  - No spending recorded yet."
+        merchant_lines = "\n".join(
+            f"  - {m['name']}: {_naira(m['total'])} across {m['count']} payment(s)"
+            for m in sorted(by_merchant.values(), key=lambda m: -m["total"])[:8]
+        ) or "  - None yet."
+        ledger_lines = "\n".join(
+            f"  - {t['date']} | {t['bank']} | {'MONEY IN' if t['type'] == 'credit' else 'MONEY OUT'} | "
+            f"{_naira(t['amount'])} | {t['merchant']} | {t['category']}"
+            for t in pool[:tx_limit]
+        ) or "  - No transactions yet."
+        gaps = (f"\n- Banks with no reported balance yet (not included in the total): {', '.join(unknown_banks)}"
+                if unknown_banks else "")
+
+        return f"""=== TOTAL COMBINED BALANCE (authoritative) ===
+- Across all {len(views)} connected bank(s): {_naira(total_balance)}{gaps}
+
+=== BALANCE BY BANK (authoritative) ===
+{chr(10).join(bank_lines)}
+
+=== OVERALL CASH FLOW (all banks + cash + receipts) ===
+- Total money in: {_naira(money_in)}
+- Total money out: {_naira(money_out)}
+- Net flow: {_naira(money_in - money_out)}
+- Of the money out, cash and receipts logged in the app: {_naira(cash_total_out)}
+
+=== SPENDING BY CATEGORY ===
+{category_lines}
+
+=== TOP MERCHANTS BY SPEND ===
+{merchant_lines}
+
+=== RECENT TRANSACTIONS (newest first, every bank) ===
+{ledger_lines}"""
+    except Exception as e:
+        print(f"[chat_service] build_wealth_context failed: {e}")
+        return "=== MONEY SNAPSHOT ===\nBank data could not be loaded right now."
 
 
 def handle_chat_turn(user_id: str, message: str, chat_id: str = None, channel: str = "web") -> str:
@@ -393,11 +529,12 @@ async def chat_with_history(query: dict):
                 total_balance += balance
                 accounts_summary.append(f"- {name}: ₦{balance:,.2f}")
         
-        ready_to_assign = total_balance - total_assigned
-        accounts_context = "\n".join(accounts_summary) if accounts_summary else "No accounts found."
-        accounts_context += f"\n\nTotal Balance: ₦{total_balance:,.2f}"
-        accounts_context += f"\nTotal Assigned to Goals/Bills: ₦{total_assigned:,.2f}"
-        accounts_context += f"\nReady to Assign (Available): ${ready_to_assign:.2f}"
+        # Multi-bank view: combined total, per-bank balances and one merged
+        # transaction ledger. Replaces the legacy single-account summary so the
+        # chat matches the dashboard bank cards exactly.
+        wealth_context = await asyncio.to_thread(build_wealth_context, user_id)
+        accounts_context = wealth_context
+        accounts_context += f"\n\n=== GOALS & BILLS ALLOCATION ===\n- Total assigned to goals/bills: ₦{total_assigned:,.2f}"
         
         # 5. Get Gmail email data for spending insights
         gmail_context = ""
@@ -737,10 +874,12 @@ async def chat_with_history(query: dict):
 
         # 6. Final Advisor Response (Grounded in History + Goals + Accounts + Context)
         advisor_prompt = f"""
-        You are the Fintech AI Student Financial Advisor.
+        You are Loamy, the user's personal wealth manager: a warm, sharp financial advisor who
+        knows their money across every connected bank. Talk to them like a trusted human advisor
+        sitting across the table, not like a report generator.
         {date_context}
         
-        === USER'S BANK ACCOUNTS ===
+        === USER'S MONEY ACROSS ALL BANKS ===
         {accounts_context}
         
         === ALL SAVINGS GOALS ===
@@ -754,16 +893,30 @@ async def chat_with_history(query: dict):
         
         {gmail_context}
         
-        {bank_alerts_context}
-        
         === CONVERSATION HISTORY (READ THIS CAREFULLY) ===
         {recent_chat_context}
         
         Current User Message: {user_msg}
         
         INSTRUCTIONS:
-        - You have FULL ACCESS to the user's account balances shown above. When they ask about their balance, tell them!
-        - The "Ready to Assign" amount is what they have available after subtracting money already assigned to goals/bills.
+        HOW TO ANSWER (WEALTH MANAGER VOICE):
+        - You have FULL ACCESS to the combined balance, every bank's balance, cash flow and the
+          transaction ledger above. These figures are authoritative: quote them exactly and never invent numbers.
+        - Write in natural, flowing conversational prose, like a message from a person who knows their finances.
+          Do NOT use rigid templates: no blockquote ">" lines, no "Today, <date>" header lines, no
+          "Your balance ..." label lines, no sign-off footer like "Loamy - your financial companion", and no
+          closing question such as "How else can I help you?". Avoid headings and tables.
+        - When asked how much they have, give the combined total first, then say in a sentence or two where it
+          sits: which bank holds most of it and roughly how it splits (name each bank and its balance).
+          If a bank has no reported balance yet, say so plainly instead of guessing.
+        - Break down where their money is going using THEIR data: name the biggest categories and merchants,
+          point out notable or repeated payments, and compare money in versus money out.
+        - Always add one or two tailored, practical suggestions grounded in those patterns (for example a
+          category to trim, a bank to keep a buffer in, a recurring cost worth reviewing). Be proactive:
+          mention a risk or opportunity they did not ask about if the data shows one.
+        - Use short lists only when comparing three or more items; otherwise stay in sentences. Keep it concise,
+          confident and encouraging. Use naira (₦) with thousands separators.
+        - If asked about one bank, focus on that bank's balance and transactions only.
         - If the user just set a goal, confirm it and calculate how much they need to save daily/weekly to reach it by their deadline.
         - If they are asking for advice, look at their recent spending to see if they can afford their goals.
         - If user wants to allocate money (e.g., "allocate $2000 to my bills"), show them a breakdown of how you'd distribute it.
@@ -771,7 +924,7 @@ async def chat_with_history(query: dict):
           * ALLOCATE: [Item Name] | $[Amount]
           Then ask: "Shall I update your dashboard with these changes?" - but do NOT actually make changes until they confirm.
         - If the Current User Message includes a [SYSTEM NOTE] saying allocations were successful, warmly inform the user that their dashboard has been updated and they can refresh their Savings Goals page to see it.
-        - Keep the tone encouraging but realistic for a student.
+        - Keep the tone encouraging but realistic.
         
         ### CONVERSATIONAL CONTEXT & MEMORY (CRITICAL):
         Before responding, ALWAYS scan the ENTIRE conversation history above to understand context:

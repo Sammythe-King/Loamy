@@ -6,6 +6,7 @@ import {
   fetchConnectedAccounts,
   connectBank,
 } from "../services/bankService";
+import BankLogo from "./BankLogo.jsx";
 import "./ConnectBankModal.css";
 
 /*
@@ -133,13 +134,14 @@ export default function ConnectBankModal({ isOpen, onClose, userId, onConnected 
                     disabled={isConnected || submitting}
                     aria-pressed={isSelected}
                   >
-                    {bank.logo ? (
-                      <img src={bank.logo} alt="" className="cbm-logo" width={40} height={40} />
-                    ) : (
-                      <span className="cbm-logo cbm-logo-fallback">
-                        <FontAwesomeIcon icon={faBuildingColumns} />
-                      </span>
-                    )}
+                    <BankLogo
+                      name={bank.name}
+                      slug={bank.slug}
+                      backendLogo={bank.logo}
+                      imgClassName="cbm-logo"
+                      className="cbm-logo cbm-logo-fallback"
+                      size={40}
+                    />
                     <span className="cbm-bank-name">{bank.name}</span>
                     {isConnected && <span className="cbm-badge">Connected</span>}
                   </button>

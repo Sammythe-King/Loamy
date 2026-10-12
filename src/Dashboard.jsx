@@ -8,6 +8,7 @@ import { runActivitySync } from "./services/activitySyncService";
 import LedgerLogWidget from "./LedgerLogWidget";
 import ReviewQueueNavButton from "./ReviewQueueNavButton";
 import ConnectBankModal from "./components/ConnectBankModal.jsx";
+import BankLogo from "./components/BankLogo.jsx";
 import { fetchConnectedAccounts, fetchAccountTransactions } from "./services/bankService.js";
 
 const mergeStableList = (next, previous) => {
@@ -123,7 +124,7 @@ const ConnectedBanks = ({ accounts, bankFlows, onAddBank }) => {
             {rows.map((row) => (
               <div className={`connected-bank-item${expandedId === row.id ? " is-open" : ""}`} key={row.id}>
               <button type="button" className="connected-bank-card" aria-expanded={expandedId === row.id} onClick={() => setExpandedId(expandedId === row.id ? null : row.id)}>
-                <span className="connected-bank-logo">{row.logo ? <img src={row.logo} alt="" /> : <i className="fa-solid fa-building-columns" aria-hidden="true" />}</span>
+                <span className="connected-bank-logo"><BankLogo name={row.name} backendLogo={row.logo} /></span>
                 <span className="connected-bank-copy">
                   <strong>{row.name}</strong>
                   <small>•••• {row.tail || "—"} · {row.count} transactions</small>

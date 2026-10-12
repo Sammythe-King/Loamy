@@ -45,6 +45,7 @@
 .connected-bank-card:hover { border-color: #2e7d32; box-shadow: 0 5px 16px rgba(20, 70, 28, .1); transform: translateY(-1px); }
 .connected-bank-logo { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; background: #eff7ef; color: #23752d; overflow: hidden; flex: 0 0 auto; }
 .connected-bank-logo img { width: 28px; height: 28px; object-fit: contain; }
+.bank-logo-initials { display: grid; place-items: center; border-radius: 8px; background: #23752d; color: #fff; font-weight: 700; font-size: 12px; letter-spacing: 0.02em; }
 .connected-bank-copy, .connected-bank-balance { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .connected-bank-copy { flex: 1; }
 .connected-bank-copy strong, .connected-bank-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
