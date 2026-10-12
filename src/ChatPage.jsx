@@ -210,30 +210,60 @@ const createNewChat = async (title) => {
     const parseMarkdown = (text) => {
         if (!text) return "";
         
-        let html = text
+        const escaped = text
             .replace(/&/g, "&amp;")
             .replace(/</g, "&lt;")
             .replace(/>/g, "&gt;");
-        
-        // Headers
-        html = html.replace(/^### (.+)$/gm, "<h4>$1</h4>");
-        html = html.replace(/^## (.+)$/gm, "<h3>$1</h3>");
-        html = html.replace(/^# (.+)$/gm, "<h2>$1</h2>");
-        
-        // Bold
-        html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-        
-        // Italic
-        html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-        
-        // Lists
-        html = html.replace(/^\s*[-*]\s+(.+)$/gm, "<li>$1</li>");
-        
-        // Line breaks
-        html = html.replace(/\n\n/g, "</p><p>");
-        html = html.replace(/\n/g, "<br>");
-        
-        return html;
+
+        const inline = (s) => s
+            .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+            .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>");
+
+        const out = [];
+        let listItems = [];
+        let paragraph = [];
+
+        const flushList = () => {
+            if (listItems.length) {
+                out.push(`<ul>${listItems.map((li) => `<li>${inline(li)}</li>`).join("")}</ul>`);
+                listItems = [];
+            }
+        };
+        const flushParagraph = () => {
+            if (paragraph.length) {
+                out.push(`<p>${paragraph.map(inline).join("<br>")}</p>`);
+                paragraph = [];
+            }
+        };
+
+        escaped.split("\n").forEach((rawLine) => {
+            const line = rawLine.trim();
+            if (!line) {
+                flushList();
+                flushParagraph();
+                return;
+            }
+            const heading = line.match(/^(#{1,3})\s+(.+)$/);
+            if (heading) {
+                flushList();
+                flushParagraph();
+                const tag = heading[1].length === 1 ? "h2" : heading[1].length === 2 ? "h3" : "h4";
+                out.push(`<${tag}>${inline(heading[2])}</${tag}>`);
+                return;
+            }
+            const bullet = line.match(/^[-*\u2022]\s+(.+)$/);
+            if (bullet) {
+                flushParagraph();
+                listItems.push(bullet[1]);
+                return;
+            }
+            flushList();
+            paragraph.push(line);
+        });
+        flushList();
+        flushParagraph();
+
+        return out.join("");
     };
 
     // Handle text chat submission

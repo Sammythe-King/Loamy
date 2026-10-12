@@ -458,7 +458,30 @@ const Dashboard = () => {
       fetchInvoices();
     };
     window.addEventListener("loamy:data-synced", handleDataSynced);
-    return () => window.removeEventListener("loamy:data-synced", handleDataSynced);
+
+    // Opening the dashboard starts a server-side sync in the background, but the
+    // response only carries the data that was stored BEFORE that sync ran. Re-read
+    // shortly after load, then keep polling (each poll also re-arms the throttled
+    // server sync) so new bank alerts show up without a manual refresh.
+    const quickRefreshTimers = [8000, 20000].map((delay) =>
+      setTimeout(() => {
+        if (document.visibilityState === "visible") fetchDashboardData();
+      }, delay)
+    );
+    const pollTimer = setInterval(() => {
+      if (document.visibilityState === "visible") fetchDashboardData();
+    }, 45000);
+    const handleVisible = () => {
+      if (document.visibilityState === "visible") fetchDashboardData();
+    };
+    document.addEventListener("visibilitychange", handleVisible);
+
+    return () => {
+      window.removeEventListener("loamy:data-synced", handleDataSynced);
+      quickRefreshTimers.forEach(clearTimeout);
+      clearInterval(pollTimer);
+      document.removeEventListener("visibilitychange", handleVisible);
+    };
   }, []);
 
   const fetchInvoices = async () => {

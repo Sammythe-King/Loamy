@@ -350,19 +350,45 @@
     border: 1px solid rgba(0, 0, 0, 0.08);
 }
 
+.ai-message > div > :first-child {
+    margin-top: 0;
+}
+
+.ai-message > div > :last-child {
+    margin-bottom: 0;
+}
+
+.ai-message p {
+    margin: 0 0 12px;
+}
+
+.ai-message strong {
+    color: #1a4a1c;
+    font-weight: 600;
+}
+
 .ai-message h2, .ai-message h3, .ai-message h4 {
-    margin-top: 8px;
-    margin-bottom: 8px;
+    margin: 16px 0 8px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(34, 90, 36, 0.12);
     color: #225a24;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
 }
 
 .ai-message ul, .ai-message ol {
-    margin: 8px 0;
-    padding-left: 20px;
+    margin: 4px 0 12px;
+    padding: 0;
+    list-style: none;
 }
 
 .ai-message li {
-    margin-bottom: 4px;
+    margin-bottom: 6px;
+    padding: 8px 12px;
+    background: rgba(34, 90, 36, 0.05);
+    border-radius: 10px;
 }
 
 /* Typing Indicator */
