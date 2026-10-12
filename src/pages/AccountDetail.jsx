@@ -6,6 +6,7 @@ import {
   faArrowLeft, faArrowDown, faArrowUp, faBuildingColumns, faPlus,
 } from "@fortawesome/free-solid-svg-icons";
 import ConnectBankModal from "../components/ConnectBankModal.jsx";
+import BankLogo from "../components/BankLogo.jsx";
 import {
   fetchAccountTransactions,
   formatNaira,
@@ -109,13 +110,14 @@ export default function AccountDetail() {
 
         <header className="ad-header">
           <div className="ad-bank">
-            {account?.logo ? (
-              <img src={account.logo} alt="" className="ad-logo" width={52} height={52} />
-            ) : (
-              <span className="ad-logo ad-logo-fallback">
-                <FontAwesomeIcon icon={faBuildingColumns} />
-              </span>
-            )}
+            <BankLogo
+              name={account?.bank_name || account?.nickname}
+              slug={account?.bank_slug}
+              backendLogo={account?.logo}
+              imgClassName="ad-logo"
+              className="ad-logo ad-logo-fallback"
+              size={52}
+            />
             <div>
               <h1 className="ad-title">{account?.nickname || account?.bank_name || "Bank account"}</h1>
               <p className="ad-subtitle">
