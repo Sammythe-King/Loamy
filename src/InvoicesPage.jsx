@@ -3,7 +3,7 @@ import { useNavigate, Link } from "react-router-dom";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { 
   faChartPie, faComment, faFileInvoiceDollar, faPlus,
-  faCheck, faTrash, faClock, faCheckCircle, faListCheck
+  faCheck, faTrash, faClock, faCheckCircle, faListCheck, faBuildingColumns
 } from "@fortawesome/free-solid-svg-icons";
 import "./InvoicesPage.css";
 
@@ -134,6 +134,10 @@ const InvoicesPage = () => {
             <Link to="/invoices" className="menu-item active">
               <FontAwesomeIcon icon={faFileInvoiceDollar} />
               <span>Invoices</span>
+            </Link>
+            <Link to="/accounts" className="menu-item">
+              <FontAwesomeIcon icon={faBuildingColumns} />
+              <span>Bank Accounts</span>
             </Link>
             <Link to="/review-queue" className="menu-item">
               <FontAwesomeIcon icon={faListCheck} />
