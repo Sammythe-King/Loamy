@@ -10,6 +10,7 @@ import {
 } from "@fortawesome/free-solid-svg-icons";
 import Logo from "./assets/LoamyLogo.png";
 import ReviewQueue from "./ReviewQueue.jsx";
+import ChatReviewLink from "./ChatReviewLink.jsx";
 import { isRealUserId } from "./services/activitySyncService";
 import "./ChatPage.css";
 
@@ -611,6 +612,10 @@ const createNewChat = async (title) => {
                             <FontAwesomeIcon icon={faBuildingColumns} />
                             <span>Bank Accounts</span>
                         </Link>
+                        <ChatReviewLink
+                            userId={currentUser?.id || currentUser?.user_id || "default"}
+                            refreshKey={messages.length}
+                        />
                     </div>
 
                     <div className="menu-section">
