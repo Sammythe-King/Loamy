@@ -183,6 +183,107 @@ def _format_context(ctx: dict) -> str:
 """
 
 
+def apply_chat_categorization(user_id: str, vendor: str, category: str, amount=None) -> int:
+    """Persist a category the user gave in chat and mirror it into the Review Queue.
+
+    Resolves every pending review item whose vendor matches (and whose amount
+    matches, when given), tags the underlying transaction, and saves a vendor
+    memory rule - the same effects as answering the item in the queue itself.
+    Returns how many transactions were updated."""
+    vendor_key = (vendor or "").strip().lower()
+    category = categorizer.coerce_category(category)
+    if not vendor_key or category == categorizer.UNCATEGORIZED:
+        return 0
+
+    try:
+        target_amount = float(re.sub(r"[^\d.]", "", str(amount))) if amount not in (None, "", "NONE") else None
+    except ValueError:
+        target_amount = None
+
+    def amount_matches(value) -> bool:
+        if target_amount is None:
+            return True
+        try:
+            return abs(float(value or 0) - target_amount) < 1
+        except (TypeError, ValueError):
+            return False
+
+    updated = 0
+    resolved_at = datetime.now().isoformat()
+
+    try:
+        queue = review_queue_collection.get(where={"user_id": user_id})
+    except Exception as e:
+        print(f"[CHAT-CATEGORIZE] could not read review queue: {e}")
+        queue = {"ids": [], "metadatas": []}
+
+    for review_id, meta in zip(queue.get("ids", []), queue.get("metadatas", [])):
+        if meta.get("status") != "pending":
+            continue
+        item_vendor = (meta.get("vendor") or "").strip().lower()
+        if not item_vendor or not (vendor_key in item_vendor or item_vendor in vendor_key):
+            continue
+        if not amount_matches(meta.get("amount")):
+            continue
+
+        meta["status"] = "resolved"
+        meta["category"] = category
+        meta["user_reply"] = "Categorized in chat"
+        meta["resolved_at"] = resolved_at
+        try:
+            review_queue_collection.update(ids=[review_id], metadatas=[meta])
+        except Exception as e:
+            print(f"[CHAT-CATEGORIZE] could not resolve {review_id}: {e}")
+            continue
+
+        source_id = meta.get("source_id", "")
+        if source_id.startswith("ledger_"):
+            database.update_transaction_category(source_id[len("ledger_"):], category)
+        elif source_id:
+            try:
+                tx = gmail_data_collection.get(ids=[source_id])
+                if tx["ids"]:
+                    tx_meta = tx["metadatas"][0]
+                    tx_meta["category"] = category
+                    tx_meta["reviewed"] = True
+                    gmail_data_collection.update(ids=[source_id], metadatas=[tx_meta])
+            except Exception as e:
+                print(f"[CHAT-CATEGORIZE] could not tag transaction {source_id}: {e}")
+        updated += 1
+
+    # Ledger rows (cash entries, receipts) that never reached the queue.
+    try:
+        for tx in load_ledger_transactions(user_id):
+            if tx.get("category") != categorizer.UNCATEGORIZED:
+                continue
+            description = (tx.get("description") or "").strip().lower()
+            if not description or not (vendor_key in description or description in vendor_key):
+                continue
+            if not amount_matches(tx.get("amount")):
+                continue
+            res = database.update_transaction_category(tx["id"], category)
+            if res["status"] == "success":
+                updated += 1
+    except Exception as e:
+        print(f"[CHAT-CATEGORIZE] ledger update failed: {e}")
+
+    if updated:
+        try:
+            existing = vendor_memory_collection.get(where={"vendor_key": vendor_key})
+            memory = {"vendor_key": vendor_key, "vendor": vendor, "category": category, "user_id": user_id}
+            if existing["ids"]:
+                vendor_memory_collection.update(ids=[existing["ids"][0]], metadatas=[memory])
+            else:
+                vendor_memory_collection.add(
+                    ids=[f"vm_{secrets.token_hex(6)}"],
+                    documents=[f"{vendor} = {category}"],
+                    metadatas=[memory],
+                )
+        except Exception as e:
+            print(f"[CHAT-CATEGORIZE] vendor memory save failed: {e}")
+    return updated
+
+
 def generate_reply(model_instance, advisor_prompt: str, user_id: str, user_msg: str) -> str:
     """Generate a reply for the history-based chat flow using this service's model."""
     prompt = f"{advisor_prompt}\n\nUser question: {user_msg}\n\nYour answer:"
@@ -1001,6 +1102,18 @@ async def chat_with_history(query: dict):
           "Done - I've logged an invoice for Mr James (₦15,000) due August 5."
         - Dates in the marker MUST be in YYYY-MM-DD format. If no date was given, use NONE.
 
+        ### CATEGORIZING TRANSACTIONS (SAVES TO THE REVIEW QUEUE):
+        When the user tells you what a specific transaction was for (e.g. "the one from EMERALDA was for fuel")
+        or confirms a category you proposed, you MUST save it by outputting one marker line per transaction,
+        each on its own line, in EXACTLY this format:
+          * CATEGORIZE: [Vendor name as shown in the transactions] | [Amount or NONE] | [Category]
+          Example: * CATEGORIZE: EMERALDA SERVIC | 28618.72 | Transportation
+        - [Category] MUST be one of: Food & Dining, Groceries, Transportation, Bills & Utilities, Shopping,
+          Health, Entertainment, Education, Personal Care, Business, Internal Transfers, Bank Charges, Income, Other.
+          Map fuel, taxis and travel to Transportation.
+        - Only output a marker when the user has actually stated or confirmed the category. Never guess.
+        - Include a friendly confirmation sentence alongside the marker, and mention it is now updated in their Review Queue.
+
         ### INTENT DISAMBIGUATION - "ASSIGN" AND SIMILAR WORDS:
         The word "assign" can mean different things - understand the user's TRUE intent:
         ALLOCATE/FUND (add money TOWARDS a goal - increases "assigned" amount):
@@ -1126,6 +1239,24 @@ async def chat_with_history(query: dict):
         except Exception as e:
             print(f"[INVOICE] Error parsing CREATE_INVOICE marker: {e}")
 
+        # --- Handle CATEGORIZE markers: persist chat categories into the Review Queue ---
+        categorized_count = 0
+        try:
+            kept_lines = []
+            for line in reply_text.split("\n"):
+                marker_match = re.search(r"CATEGORIZE:\s*(.+)", line)
+                if marker_match:
+                    parts = [p.strip() for p in marker_match.group(1).split("|")]
+                    if len(parts) >= 3 and parts[0] and parts[2]:
+                        categorized_count += await asyncio.to_thread(
+                            apply_chat_categorization, user_id, parts[0], parts[2], parts[1]
+                        )
+                    continue
+                kept_lines.append(line)
+            reply_text = "\n".join(kept_lines).strip()
+        except Exception as e:
+            print(f"[CHAT-CATEGORIZE] Error parsing CATEGORIZE marker: {e}")
+
         # WhatsApp turns are recorded by whatsapp.py after delivery (it knows the
         # original message, not the snapshot-prefixed prompt), so only log web here.
         if channel != "whatsapp":
@@ -1133,7 +1264,11 @@ async def chat_with_history(query: dict):
                 record_chat_turn, user_id, user_msg, reply_text, "app", asked_at
             )
 
-        return {"reply": reply_text, "invoice_created": invoice_created}
+        return {
+            "reply": reply_text,
+            "invoice_created": invoice_created,
+            "categorized_count": categorized_count,
+        }
         
     except Exception as e:
         import traceback

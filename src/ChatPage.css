@@ -103,6 +103,19 @@
     color: #555;
 }
 
+.menu-item-badge {
+    margin-left: auto;
+    min-width: 20px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: #d32f2f;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 18px;
+    text-align: center;
+}
+
 /* Chat List */
 .chat-list {
     display: flex;
