@@ -5,7 +5,7 @@ import {
     faPlus, faChartPie, faGear, 
     faRightFromBracket, faArrowUp, faPaperclip, faEnvelope,
     faCoffee, faLaptop, faCartShopping, faCalculator,
-    faEllipsis, faPen, faTrash, faCheck, faFileInvoiceDollar,
+    faEllipsis, faPen, faTrash, faCheck, faFileInvoiceDollar, faBuildingColumns,
     faFilePdf, faFileWord, faFileExcel, faFileImage, faFileLines
 } from "@fortawesome/free-solid-svg-icons";
 import Logo from "./assets/LoamyLogo.png";
@@ -606,6 +606,10 @@ const createNewChat = async (title) => {
                         <Link to="/invoices" className="menu-item">
                             <FontAwesomeIcon icon={faFileInvoiceDollar} />
                             <span>Invoices</span>
+                        </Link>
+                        <Link to="/accounts" className="menu-item">
+                            <FontAwesomeIcon icon={faBuildingColumns} />
+                            <span>Bank Accounts</span>
                         </Link>
                     </div>
 
