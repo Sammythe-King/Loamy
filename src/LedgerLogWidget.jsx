@@ -59,14 +59,14 @@ export default function LedgerLogWidget({ userId }) {
     <div className="card transactions-card ledger-log-card">
       <div className="card-header">
         <i className="fa-brands fa-whatsapp" style={{ color: "#25D366" }} aria-hidden="true"></i>
-        <h3>Cash &amp; Receipts Log</h3>
+        <h3>WhatsApp Log</h3>
       </div>
 
       {loading ? (
         <p className="ledger-log-muted">Loading entries...</p>
       ) : items.length === 0 ? (
         <div className="empty-state">
-          <p>No cash or receipt entries yet.</p>
+          <p>No WhatsApp entries yet.</p>
           <p className="ledger-log-muted">Text Loamy on WhatsApp, e.g. &quot;Spent 1,000 MUR on lunch&quot;.</p>
         </div>
       ) : (
