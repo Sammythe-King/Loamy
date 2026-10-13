@@ -1969,7 +1969,20 @@ def get_connected_bank_accounts(user_id):
         if meta.get("kind") == "connected_bank" and meta.get("bank_slug") in SUPPORTED_BANKS \
                 and meta.get("status", "active") == "active":
             connected.append(row)
-    return connected
+
+    # A bank row auto-created from alerts has no account number. If the user
+    # also connected that bank with an account number, they are the same
+    # account, so keep only the numbered row.
+    slugs_with_tail = {
+        (r.get("metadata") or {}).get("bank_slug")
+        for r in connected
+        if (r.get("metadata") or {}).get("account_tail")
+    }
+    return [
+        r for r in connected
+        if (r.get("metadata") or {}).get("account_tail")
+        or (r.get("metadata") or {}).get("bank_slug") not in slugs_with_tail
+    ]
 
 
 def get_connected_bank_slugs(user_id):
