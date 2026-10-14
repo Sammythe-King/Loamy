@@ -19,6 +19,7 @@ from models import (
     pending_conversions_collection,
     notifications_collection,
     gmail_data_collection,
+    review_queue_collection,
 )
 
 def create_invoice_reminder():
@@ -528,7 +529,42 @@ def process_receipt_image(file_data, content_type, user_id="default"):
 
 # ========== SHARED FINANCIAL SNAPSHOT (single source of truth) ==========
 
+def _review_category_overrides(user_id: str) -> dict:
+    """{source_id: category} for every Review Queue item the user has resolved,
+    whether from the queue itself or by telling the chat."""
+    try:
+        rq = review_queue_collection.get(where={"user_id": user_id})
+    except Exception as e:
+        print(f"[v0] review category overrides unavailable: {e}")
+        return {}
+    overrides = {}
+    for meta in rq.get("metadatas") or []:
+        meta = meta or {}
+        if meta.get("status") == "resolved" and meta.get("source_id") and meta.get("category"):
+            overrides[meta["source_id"]] = meta["category"]
+    return overrides
+
+
 def load_user_emails(user_id: str) -> list:
+    """Synced emails with the user's own categories applied on top.
+
+    The Review Queue is the source of truth for categories the user chose, so
+    every screen and the chat read the same answer."""
+    emails = _load_user_emails_raw(user_id)
+    overrides = _review_category_overrides(user_id)
+    if not overrides:
+        return emails
+    result = []
+    for email in emails:
+        narration = (email.get("narration") or email.get("subject") or "Transaction")
+        amount = float(email.get("amount") or 0)
+        sid = email.get("id") or f"{narration.lower()[:20]}_{amount}"
+        category = overrides.get(sid)
+        result.append({**email, "category": category} if category else email)
+    return result
+
+
+def _load_user_emails_raw(user_id: str) -> list:
     """Load a user's synced emails, Supabase-primary with ChromaDB fallback.
 
     Supabase `gmail_data` is now the source of truth. If it has no row yet

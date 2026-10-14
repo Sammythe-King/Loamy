@@ -183,6 +183,57 @@ def _format_context(ctx: dict) -> str:
 """
 
 
+_CHARGE_GROUP_KEYS = {"bank charges", "bank charge", "bank fees", "bank fee", "charges", "fees"}
+_UNSET_CATEGORY_LABELS = {"", "other", "uncategorized", "banking", "none", "null"}
+_CHARGE_TERMS = ("charge", "chrg", "fee", "stamp duty", "levy", "commission", "maintenance", " vat")
+
+
+def _resolve_chat_category(raw) -> str:
+    """Standard category when one fits; otherwise keep the user's own short label
+    (e.g. "Bank Charges", "Internal Transfers"). Returns "" for empty/uncategorized."""
+    label = re.sub(r"\s+", " ", str(raw or "")).strip()
+    if not label or label.lower() in ("uncategorized", "none", "null", "unknown", "other"):
+        return ""
+    canonical = categorizer.coerce_category(label)
+    if canonical != categorizer.UNCATEGORIZED:
+        return canonical
+    return label.title() if len(label) <= 40 else ""
+
+
+def _log_chat_review_item(user_id: str, email: dict, vendor: str, category: str, resolved_at: str) -> bool:
+    """Record a chat categorization of a bank alert as a resolved Review Queue item.
+
+    The queue is the shared source of truth, so every screen (Bank Accounts,
+    dashboard, chat context) picks the category up, and it survives re-syncs."""
+    narration = email.get("narration") or email.get("subject") or "Transaction"
+    amount = float(email.get("amount") or 0)
+    source_id = email.get("id") or f"{narration.lower()[:20]}_{amount}"
+    meta = {
+        "user_id": user_id, "vendor": (vendor or narration)[:60], "amount": amount,
+        "transaction_type": email.get("transaction_type") or "debit",
+        "date": email.get("date", ""), "source_id": source_id, "status": "resolved",
+        "nudge": "", "user_reply": "Categorized in chat", "category": category,
+        "created_at": resolved_at, "resolved_at": resolved_at,
+    }
+    try:
+        existing = review_queue_collection.get(where={"source_id": source_id})
+        if existing["ids"]:
+            current = existing["metadatas"][0] or {}
+            if current.get("status") == "pending":
+                return False
+            current.update({"status": "resolved", "category": category,
+                            "user_reply": "Categorized in chat", "resolved_at": resolved_at})
+            review_queue_collection.update(ids=[existing["ids"][0]], metadatas=[current])
+        else:
+            review_queue_collection.add(
+                ids=[f"rev_{source_id}"], documents=[f"Review: {meta['vendor']} {amount}"], metadatas=[meta]
+            )
+        return True
+    except Exception as e:
+        print(f"[CHAT-CATEGORIZE] could not log {source_id}: {e}")
+        return False
+
+
 def apply_chat_categorization(user_id: str, vendor: str, category: str, amount=None) -> int:
     """Persist a category the user gave in chat and mirror it into the Review Queue.
 
@@ -191,9 +242,10 @@ def apply_chat_categorization(user_id: str, vendor: str, category: str, amount=N
     memory rule - the same effects as answering the item in the queue itself.
     Returns how many transactions were updated."""
     vendor_key = (vendor or "").strip().lower()
-    category = categorizer.coerce_category(category)
-    if not vendor_key or category == categorizer.UNCATEGORIZED:
+    category = _resolve_chat_category(category)
+    if not vendor_key or not category:
         return 0
+    group_terms = _CHARGE_TERMS if vendor_key in _CHARGE_GROUP_KEYS else None
 
     try:
         target_amount = float(re.sub(r"[^\d.]", "", str(amount))) if amount not in (None, "", "NONE") else None
@@ -221,7 +273,12 @@ def apply_chat_categorization(user_id: str, vendor: str, category: str, amount=N
         if meta.get("status") != "pending":
             continue
         item_vendor = (meta.get("vendor") or "").strip().lower()
-        if not item_vendor or not (vendor_key in item_vendor or item_vendor in vendor_key):
+        if not item_vendor:
+            continue
+        if group_terms:
+            if not any(term in f" {item_vendor}" for term in group_terms):
+                continue
+        elif not (vendor_key in item_vendor or item_vendor in vendor_key):
             continue
         if not amount_matches(meta.get("amount")):
             continue
@@ -250,6 +307,26 @@ def apply_chat_categorization(user_id: str, vendor: str, category: str, amount=N
             except Exception as e:
                 print(f"[CHAT-CATEGORIZE] could not tag transaction {source_id}: {e}")
         updated += 1
+
+    # Bank alerts that never reached the queue (fees, charges, anything the
+    # scan skips): log each as a resolved queue item so every screen sees it.
+    try:
+        for email in load_user_emails(user_id):
+            if not (email.get("is_bank_alert") is True or email.get("is_bank_alert") == "true"):
+                continue
+            if str(email.get("category") or "").strip().lower() not in _UNSET_CATEGORY_LABELS:
+                continue
+            narration = (email.get("narration") or email.get("subject") or "").strip().lower()
+            if not narration or not amount_matches(email.get("amount")) or float(email.get("amount") or 0) <= 0:
+                continue
+            if group_terms:
+                hit = any(term in f" {narration}" for term in group_terms)
+            else:
+                hit = vendor_key in narration or narration in vendor_key
+            if hit and _log_chat_review_item(user_id, email, vendor, category, resolved_at):
+                updated += 1
+    except Exception as e:
+        print(f"[CHAT-CATEGORIZE] bank alert update failed: {e}")
 
     # Ledger rows (cash entries, receipts) that never reached the queue.
     try:
