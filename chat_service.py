@@ -1188,6 +1188,9 @@ async def chat_with_history(query: dict):
         - [Category] MUST be one of: Food & Dining, Groceries, Transportation, Bills & Utilities, Shopping,
           Health, Entertainment, Education, Personal Care, Business, Internal Transfers, Bank Charges, Income, Other.
           Map fuel, taxis and travel to Transportation.
+        - For a whole group of bank fees (stamp duty, statement/maintenance charges, FIP/NIP charges, VAT on fees),
+          output ONE marker: * CATEGORIZE: Bank Charges | NONE | Bank Charges
+        - NEVER say a transaction was moved or categorized unless you output a marker line for it in the same reply.
         - Only output a marker when the user has actually stated or confirmed the category. Never guess.
         - Include a friendly confirmation sentence alongside the marker, and mention it is now updated in their Review Queue.
 
@@ -1333,6 +1336,19 @@ async def chat_with_history(query: dict):
             reply_text = "\n".join(kept_lines).strip()
         except Exception as e:
             print(f"[CHAT-CATEGORIZE] Error parsing CATEGORIZE marker: {e}")
+
+        # The model sometimes says "done" for a bank-charges request without
+        # emitting a marker; apply it directly so the claim is always true.
+        try:
+            wants_charges = re.search(r"\bbank\s+(charges?|fees?)\b", user_msg or "", re.I) and re.search(
+                r"\b(categor|label|creat|move|put|mark|tag|file|classif|yes|go ahead|do it)", user_msg or "", re.I
+            )
+            if wants_charges and not categorized_count:
+                categorized_count += await asyncio.to_thread(
+                    apply_chat_categorization, user_id, "bank charges", "Bank Charges", None
+                )
+        except Exception as e:
+            print(f"[CHAT-CATEGORIZE] bank charges fallback failed: {e}")
 
         # WhatsApp turns are recorded by whatsapp.py after delivery (it knows the
         # original message, not the snapshot-prefixed prompt), so only log web here.
