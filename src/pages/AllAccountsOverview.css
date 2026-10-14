@@ -1,4 +1,9 @@
-.all-accounts-main { max-width: 1240px; }
+.all-accounts-main { max-width: none; min-width: 0; width: calc(100% - 240px); box-sizing: border-box; }
+.accounts-table-wrap table { table-layout: auto; }
+.accounts-table-wrap td { white-space: normal !important; overflow-wrap: anywhere; }
+.accounts-table-wrap td:nth-child(1), .accounts-table-wrap td:nth-child(2), .accounts-table-wrap td:nth-child(4), .accounts-table-wrap td:nth-child(5) { white-space: nowrap !important; overflow-wrap: normal; }
+.accounts-table-wrap th { white-space: nowrap !important; }
+@media (max-width:800px) { .all-accounts-main { width: 100%; } }
 .all-accounts-header { display:flex; justify-content:space-between; gap:24px; align-items:flex-end; margin-bottom:28px; }
 .all-accounts-header h1 { margin:8px 0 6px; color:#17324d; }
 .all-accounts-header p,.all-accounts-back,.accounts-muted { color:#718096; }

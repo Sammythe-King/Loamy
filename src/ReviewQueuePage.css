@@ -147,11 +147,39 @@
   min-width: 0;
 }
 
+.invoices-main:has(.rq-layout) {
+  min-width: 0;
+  width: calc(100% - 240px);
+  box-sizing: border-box;
+}
+
+.rq-layout {
+  width: 100%;
+}
+
 .rq-aside {
-  width: 360px;
-  flex-shrink: 0;
+  flex: 0 0 clamp(320px, 30%, 440px);
+  min-width: 0;
   position: sticky;
   top: 24px;
+}
+
+.rq-history-vendor,
+.rq-bubble p {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rq-bubble p {
+  flex: 1;
+}
+
+.rq-history-row {
+  align-items: flex-start;
+}
+
+.rq-history-vendor {
+  flex: 1;
 }
 
 /* If there are no pending nudges, collapse the empty left pane and let the
@@ -171,15 +199,19 @@
     flex-direction: column;
   }
   .rq-aside {
+    flex: 1 1 auto;
     width: 100%;
     position: static;
+  }
+  .invoices-main:has(.rq-layout) {
+    width: 100%;
   }
 }
 
 /* List of nudges - responsive grid so cards fill the available width */
 .rq-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 20px;
 }
 
