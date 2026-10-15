@@ -85,6 +85,10 @@ Rules:
   "spent 600 on fuel"), do not assume silently. Either ask "Was this 600 MUR (Rupees)
   or 600 NGN (Naira)?" or state that you treated it as ₦ and that they can reply
   "600 MUR" to correct it.
+- CASH AND FOREIGN CURRENCY: When the user says they spent cash, or names a currency other
+  than naira (e.g. "I spent 350 MUR in cash"), that spend is logged to their ledger in the
+  currency they stated. Never say you cannot track cash or foreign-currency spending.
+  If the amount, currency or purpose is unclear, ask one short question.
 - RECENT CONVERSATION covers every channel (WhatsApp and the web app). Treat it as one
   continuous conversation: if the user logged something on WhatsApp, you know about it here.
 """
@@ -246,6 +250,7 @@ def apply_chat_categorization(user_id: str, vendor: str, category: str, amount=N
     category = _resolve_chat_category(category)
     if not vendor_key or not category:
         return 0
+    category = categorizer.enforce_tech_taxonomy(vendor_key, category)
     group_terms = _CHARGE_TERMS if vendor_key in _CHARGE_GROUP_KEYS else None
 
     try:
@@ -590,6 +595,14 @@ async def chat_with_history(query: dict):
         if channel != "whatsapp":
             await asyncio.to_thread(record_chat_turn, user_id, user_msg, answered, "app", datetime.utcnow())
         return {"reply": answered, "invoice_created": False, "categorized_count": 1}
+
+    # "I spent 350 MUR in cash" typed in the web chat: log it to the ledger, as
+    # the WhatsApp handler already does before it calls this function.
+    if channel != "whatsapp" and user_id != "default_user" and _SPEND_INTENT_RE.search(user_msg or ""):
+        logged = await _try_log_manual_transaction(user_msg, user_id)
+        if logged:
+            await asyncio.to_thread(record_chat_turn, user_id, user_msg, logged, "app", datetime.utcnow())
+            return {"reply": logged, "invoice_created": False}
     
     # Pre-calculate accurate date information so AI doesn't have to guess
     from calendar import monthrange
@@ -1433,6 +1446,7 @@ def add_manual_transaction(user_id: str, amount, currency: str = "NGN", category
     resolved_category = categorizer.coerce_category(category)
     if resolved_category == categorizer.UNCATEGORIZED:
         resolved_category = categorizer.categorize_one(amount_ngn, description, description)["category"]
+    resolved_category = categorizer.enforce_tech_taxonomy(description, resolved_category)
 
     tx_date = _resolve_tx_date(date)
     tx_id = f"{'cash' if source == 'manual_cash' else 'trans'}_{os.urandom(6).hex()}"
@@ -1507,9 +1521,15 @@ def extract_manual_transaction_call(text: str):
         "a personal finance app. If the user is REPORTING money they already spent "
         "(e.g. 'I spent 1000 MUR on groceries yesterday', 'paid 3k for a taxi'), you MUST call "
         "add_manual_transaction, resolving relative dates to YYYY-MM-DD and shorthand like 3k to 3000. "
-        "Currency: use the code the user states (₦/naira -> NGN, Rs/rupees -> MUR, $ -> USD). If the "
-        "user gives NO currency, set currency to NGN (the base currency); the app will append a note "
+        "Cash counts: 'I spent 350 MUR in cash', 'paid cash for lunch, 2000' and 'gave the driver 5k cash' are "
+        "all expenses to log, so call the tool. Never skip a message just because it says cash or because the "
+        "currency is not naira.\n"
+        "Currency: capture EXACTLY the currency the user states as an ISO code (₦/naira -> NGN, "
+        "Rs/rupees/MUR -> MUR, $/dollars -> USD, £ -> GBP, € -> EUR, plus any other code such as KES, ZAR, "
+        "GHS, INR). Never convert the amount yourself and never replace a stated currency with NGN. "
+        "If the user gives NO currency, set currency to NGN (the base currency); the app will append a note "
         "letting them correct it.\n"
+        "Description: say what it was for (e.g. 'Lunch', 'Taxi'); if the user did not say, use 'Cash expense'.\n"
         "Questions about spending, goals, invoices or anything else must NOT call the tool.\n\n"
         f"User message: {text}"
     )
@@ -1542,6 +1562,13 @@ _CORRECTION_WINDOW_SECONDS = 30 * 60
 # user_id -> the last expense logged with an assumed (not stated) currency, so a
 # follow-up "600 MUR" can re-log it in the right currency.
 _pending_currency_corrections: dict = {}
+
+
+_SPEND_INTENT_RE = re.compile(
+    r"\b(spent|spend|paid|pay|bought|buy|purchased|gave|cash|cost me|costs me|lost|tipped|donated|"
+    r"withdrew|charged)\b",
+    re.IGNORECASE,
+)
 
 
 def has_explicit_currency(text: str) -> bool:
@@ -1722,7 +1749,8 @@ async def _whatsapp_receipt_handler(file_data: bytes, mime_type: str, from_phone
     cur = result.get("currency_info", {}) or {}
     ngn = cur.get("displayed_amount")
 
-    category = categorizer.coerce_category(analysis.get("category"))
+    category = categorizer.enforce_tech_taxonomy(
+        vendor, categorizer.coerce_category(analysis.get("category")))
 
     try:
         amount_str = format_logged_amount(ngn, cur.get("original_amount"), cur.get("original_currency"))
