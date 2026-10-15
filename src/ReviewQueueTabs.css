@@ -310,7 +310,7 @@
 .rqt-primary:focus-visible,
 .rqt-secondary:focus-visible,
 .rqt-ghost:focus-visible,
-.rqt-chat-row textarea:focus-visible,
+.rqt-chat-row input:focus-visible,
 .rqt-send:focus-visible,
 .rqt-bank-select:focus-visible {
   outline: 2px solid #177a35;
@@ -360,18 +360,46 @@
   gap: 8px;
 }
 
-.rqt-chat-row textarea {
+.rqt-chat-row input {
   flex: 1;
   min-width: 0;
-  resize: none;
-  padding: 10px 12px;
+  height: 40px;
+  padding: 0 18px;
   border: 1px solid #d5e0d7;
-  border-radius: 12px;
+  border-radius: 999px;
   background: #ffffff;
   font: inherit;
   font-size: 14px;
-  line-height: 1.4;
   color: #17324d;
+}
+
+.rqt-chat-row input::placeholder {
+  color: #8a9aa8;
+}
+
+.rqt-msg {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 100%;
+}
+
+.rqt-avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #177a35;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.rqt-msg .rqt-bubble.is-loamy {
+  max-width: none;
+  border-bottom-left-radius: 14px;
 }
 
 .rqt-send {

@@ -105,17 +105,22 @@ const ReviewQueuePage = () => {
   };
 
   // Returns Loamy's follow-up question when the note was too vague, else null.
-  const submitResolution = async (id, reply, category) => {
+  const submitResolution = async (id, reply, category, history) => {
     setSubmittingId(id);
     setError(null);
     try {
-      const res = await resolveReviewItem(id, reply, category);
+      const res = await resolveReviewItem(id, reply, category, history);
       if (res.status !== "success") {
         setError(res.error || "Could not save your choice.");
         return "Sorry, I couldn't save that. Please try again.";
       }
       if (res.data?.resolved === false) return res.data.reply;
       showNote(res.data?.confirmation || "Logged.");
+      if (res.data?.moved_to === "transfers") {
+        setItems((prev) => prev.filter((it) => it.id !== id));
+        await loadQueue(false);
+        return null;
+      }
       const logged = items.find((it) => it.id === id);
       if (logged) {
         setResolved((prev) => [
@@ -134,7 +139,7 @@ const ReviewQueuePage = () => {
   };
 
   const handleResolve = (id, category) => (category ? submitResolution(id, "", category) : null);
-  const handleReply = (id, text) => submitResolution(id, text, "");
+  const handleReply = (id, text, history) => submitResolution(id, text, "", history);
 
   const handleDismiss = async (id) => {
     try {

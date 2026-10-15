@@ -25,6 +25,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Form, Background
 import database
 import categorizer
 import transfers
+import review_actions
 import chat_service
 from models import (
     model,
@@ -1551,99 +1552,23 @@ async def get_review_queue(user_id: str):
 @router.post("/review-queue/resolve")
 async def resolve_review_item(data: dict):
     """
-    User replies to a nudge. Gemini extracts the category from the free-text reply,
-    we tag the underlying transaction, save a vendor memory rule, and close the item.
+    User replies to a nudge in the Review Queue mini chat. Gemini understands the
+    free-text reply (plus earlier messages in `history`), files the item, and an
+    "internal transfer" reply moves it to the Internal Transfers queue.
     {
         "review_id": "rev_xxx",
-        "reply": "Sugar for stock"
+        "reply": "Sugar for stock",
+        "history": ["earlier message", ...]
     }
     """
     try:
-        from datetime import datetime as _dt
-
-        review_id = data.get("review_id")
-        reply = (data.get("reply") or "").strip()
-        explicit_category = (data.get("category") or "").strip()
-        if explicit_category and not reply:
-            reply = explicit_category
-        if not review_id or not reply:
-            return {"status": "error", "data": None, "error": "review_id and reply are required"}
-
-        result = review_queue_collection.get(ids=[review_id])
-        if not result["ids"]:
-            return {"status": "error", "data": None, "error": "Review item not found"}
-
-        meta = result["metadatas"][0]
-        vendor = meta.get("vendor", "")
-
-        tx_type = meta.get("transaction_type") or "debit"
-        category = explicit_category
-        ai_reply = ""
-        if not explicit_category:
-            understood = await asyncio.to_thread(
-                categorizer.interpret_note, vendor, meta.get("amount", 0), tx_type, reply
-            )
-            category = understood.get("category")
-            ai_reply = understood.get("reply") or ""
-            if not category:
-                # Too vague: keep the item open and ask a follow-up in the chat.
-                return {
-                    "status": "success",
-                    "data": {"resolved": False, "reply": ai_reply or "What was this money for?"},
-                    "error": None,
-                }
-
-        # 1. Close the review item
-        meta["status"] = "resolved"
-        meta["user_reply"] = reply
-        meta["category"] = category
-        meta["resolved_at"] = _dt.now().isoformat()
-        review_queue_collection.update(ids=[review_id], metadatas=[meta])
-
-        # 2. Tag the underlying bank transaction (if linked)
-        source_id = meta.get("source_id", "")
-        if source_id.startswith("ledger_"):
-            res = database.update_transaction_category(source_id[len("ledger_"):], category)
-            if res["status"] != "success":
-                print(f"[REVIEW] Could not tag ledger transaction: {res['error']}")
-        elif source_id:
-            try:
-                tx = gmail_data_collection.get(ids=[source_id])
-                if tx["ids"]:
-                    tx_meta = tx["metadatas"][0]
-                    tx_meta["category"] = category
-                    tx_meta["reviewed"] = True
-                    gmail_data_collection.update(ids=[source_id], metadatas=[tx_meta])
-            except Exception as e:
-                print(f"[REVIEW] Could not tag transaction: {e}")
-
-        # 3. Smart Memory: remember this vendor -> category for next time
-        try:
-            import uuid as _uuid
-            vendor_key = _normalize_vendor(vendor)
-            existing = vendor_memory_collection.get(where={"vendor_key": vendor_key})
-            if existing["ids"]:
-                vendor_memory_collection.update(
-                    ids=[existing["ids"][0]],
-                    metadatas=[{"vendor_key": vendor_key, "vendor": vendor,
-                                "category": category, "user_id": meta.get("user_id", "default")}]
-                )
-            else:
-                vendor_memory_collection.add(
-                    ids=[f"vm_{_uuid.uuid4().hex[:12]}"],
-                    documents=[f"{vendor} = {category}"],
-                    metadatas=[{"vendor_key": vendor_key, "vendor": vendor,
-                                "category": category, "user_id": meta.get("user_id", "default")}]
-                )
-        except Exception as e:
-            print(f"[REVIEW] Vendor memory save error: {e}")
-
-        confirmation = ai_reply or f"Got it \u2014 logged \u20a6{float(meta.get('amount', 0)):,.0f} under {category}."
-        return {
-            "status": "success",
-            "data": {"resolved": True, "category": category, "vendor": vendor, "confirmation": confirmation},
-            "error": None
-        }
+        return await asyncio.to_thread(
+            review_actions.resolve_item,
+            data.get("review_id"),
+            data.get("reply") or "",
+            data.get("category") or "",
+            data.get("history") or [],
+        )
     except Exception as e:
         return {"status": "error", "data": None, "error": str(e)}
 
