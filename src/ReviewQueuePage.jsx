@@ -250,7 +250,12 @@ const ReviewQueuePage = () => {
                   <span className="rqt-recent-date">{item.date}</span>
                 </div>
                 {item.category && <span className="rqt-recent-tag">{item.category}</span>}
-                <span className="rqt-recent-amount">&#8358;{Number(item.amount).toLocaleString()}</span>
+                <span
+                  className={`rqt-recent-amount ${item.transaction_type === "credit" ? "is-credit" : "is-debit"}`}
+                >
+                  {item.transaction_type === "credit" ? "+" : "\u2212"}&#8358;
+                  {Number(item.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
               </li>
             ))}
           </ul>

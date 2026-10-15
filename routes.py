@@ -74,6 +74,7 @@ from email_parser import (
     _normalize_vendor,
     _extract_vendor_name,
     _build_nudge_message,
+    stage_review_item,
     _review_scan_cooldown_elapsed,
     _mark_review_scan,
     _scan_bank_emails_for_review,
@@ -685,43 +686,29 @@ async def get_dashboard_data(user_id: str = "default"):
                         already_handled = bool(review_state and review_state.get("status") in ("resolved", "dismissed"))
 
                         if has_no_category and is_not_fee and not already_handled:
-                            needs_review.append({
-                                'id': source_id,
-                                'description': narration[:50] if narration else 'Transaction',
-                                'amount': amount,
-                                'date': date,
-                                'bank': bank_name,
-                                'type': this_type,
-                                'suggested_categories': [c for c in categorizer.STANDARD_CATEGORIES if c != categorizer.UNCATEGORIZED]
-                            })
-
-                            # Layer 2: auto-create a chat nudge in the Review Queue for
-                            # unrecognized vendors (skip if already known or already queued).
+                            # Same staging path as the Review Queue scan, so the two
+                            # screens can never disagree about this transaction.
+                            outcome = "queued"
+                            remembered_category = None
                             try:
-                                vendor_name = _extract_vendor_name(narration)
-                                vendor_key = _normalize_vendor(vendor_name)
-                                known = vendor_memory_collection.get(where={"vendor_key": vendor_key})
-                                already = review_queue_collection.get(where={"source_id": source_id})
-                                if not known["ids"] and not already["ids"]:
-                                    review_queue_collection.add(
-                                        ids=[f"rev_{source_id}"],
-                                        documents=[f"Review: {vendor_name} {amount}"],
-                                        metadatas=[{
-                                            "user_id": user_id,
-                                            "vendor": vendor_name,
-                                            "amount": amount,
-                                            "transaction_type": this_type,
-                                            "date": date,
-                                            "source_id": source_id,
-                                            "status": "pending",
-                                            "nudge": _build_nudge_message("there", vendor_name, amount, this_type),
-                                            "user_reply": "",
-                                            "category": "",
-                                            "created_at": date or ""
-                                        }]
-                                    )
+                                outcome, remembered_category = stage_review_item(
+                                    user_id, "there", source_id, narration, amount, this_type, date
+                                )
                             except Exception as _qe:
                                 print(f"[REVIEW] auto-queue error: {_qe}")
+
+                            if outcome == "auto" and remembered_category:
+                                tx_record['category'] = remembered_category
+                            else:
+                                needs_review.append({
+                                    'id': source_id,
+                                    'description': narration[:50] if narration else 'Transaction',
+                                    'amount': amount,
+                                    'date': date,
+                                    'bank': bank_name,
+                                    'type': this_type,
+                                    'suggested_categories': [c for c in categorizer.STANDARD_CATEGORIES if c != categorizer.UNCATEGORIZED]
+                                })
             
             for bank_name, data in bank_balances.items():
                 accounts.append({

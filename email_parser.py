@@ -110,6 +110,67 @@ def _build_nudge_message(user_name, vendor, amount, tx_type="debit"):
 
 
 
+def stage_review_item(user_id, user_name, source_id, narration, amount, tx_type, date):
+    """Put one uncategorized bank alert where the user will see it.
+
+    Returns (outcome, category):
+      "exists": the transaction already has a Review Queue entry, nothing to do.
+      "auto":   a debit from a vendor the user already classified; the remembered
+                category is applied via a resolved entry so the dashboard and Bank
+                Accounts pick it up.
+      "queued": a pending entry the user has to answer.
+
+    Remembered vendors used to be skipped without applying anything, which left the
+    transaction uncategorized on the dashboard yet missing from the Review Queue.
+    Credits are never auto-resolved: a vendor remembered as an expense category says
+    nothing about money coming in."""
+    vendor_name = _extract_vendor_name(narration, tx_type)
+    vendor_key = _normalize_vendor(vendor_name)
+
+    if review_queue_collection.get(where={"source_id": source_id})["ids"]:
+        return "exists", None
+
+    known = vendor_memory_collection.get(where={"vendor_key": vendor_key})
+    remembered = (known["metadatas"][0] or {}).get("category") if known["ids"] else None
+    base_meta = {
+        "user_id": user_id,
+        "vendor": vendor_name,
+        "amount": amount,
+        "transaction_type": tx_type,
+        "date": date,
+        "source_id": source_id,
+        "created_at": date or "",
+    }
+
+    if remembered and tx_type != "credit":
+        review_queue_collection.add(
+            ids=[f"rev_{source_id}"],
+            documents=[f"Review: {vendor_name} {amount}"],
+            metadatas=[{
+                **base_meta,
+                "status": "resolved",
+                "nudge": "",
+                "user_reply": "Auto-categorized from a vendor you already classified",
+                "category": remembered,
+                "resolved_at": datetime.now().isoformat(),
+            }],
+        )
+        return "auto", remembered
+
+    review_queue_collection.add(
+        ids=[f"rev_{source_id}"],
+        documents=[f"Review: {vendor_name} {amount}"],
+        metadatas=[{
+            **base_meta,
+            "status": "pending",
+            "nudge": _build_nudge_message(user_name, vendor_name, amount, tx_type),
+            "user_reply": "",
+            "category": "",
+        }],
+    )
+    return "queued", None
+
+
 REVIEW_SCAN_COOLDOWN_SECONDS = 60  # matches the "feels instant" bar for a page open
 
 
@@ -211,31 +272,10 @@ def _scan_bank_emails_for_review(user_id="default", user_name="there", force=Fal
         if not (has_no_category and is_not_fee):
             continue
 
-        vendor_name = _extract_vendor_name(narration, tx_type)
-        vendor_key = _normalize_vendor(vendor_name)
         try:
-            known = vendor_memory_collection.get(where={"vendor_key": vendor_key})
-            already = review_queue_collection.get(where={"source_id": source_id})
-            if known["ids"] or already["ids"]:
-                continue
-            review_queue_collection.add(
-                ids=[f"rev_{source_id}"],
-                documents=[f"Review: {vendor_name} {amount}"],
-                metadatas=[{
-                    "user_id": user_id,
-                    "vendor": vendor_name,
-                    "amount": amount,
-                    "transaction_type": tx_type,
-                    "date": date,
-                    "source_id": source_id,
-                    "status": "pending",
-                    "nudge": _build_nudge_message(user_name, vendor_name, amount, tx_type),
-                    "user_reply": "",
-                    "category": "",
-                    "created_at": date or ""
-                }]
-            )
-            added += 1
+            outcome, _category = stage_review_item(user_id, user_name, source_id, narration, amount, tx_type, date)
+            if outcome == "queued":
+                added += 1
         except Exception as e:
             print(f"[REVIEW] scan add error: {e}")
 
