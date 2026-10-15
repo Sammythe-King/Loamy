@@ -98,6 +98,11 @@ def resolve_item(review_id: str, reply: str = "", category: str = "", history=No
             return _ok({"resolved": False, "unrelated": bool(understood.get("unrelated")),
                         "reply": ai_reply or "What was this money for?"})
 
+    guarded = categorizer.enforce_tech_taxonomy(
+        f"{vendor} {reply}", category, meta.get("transaction_type") or "debit")
+    if guarded != category:
+        category, ai_reply = guarded, ""
+
     if categorizer.is_internal_transfer(category):
         transfers.stage_as_transfer(review_id, meta, reply)
         return _ok({

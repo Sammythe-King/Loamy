@@ -155,6 +155,17 @@ def tech_category(text: str):
     return None
 
 
+def enforce_tech_taxonomy(text: str, category: str, tx_type: str = "debit") -> str:
+    """Final guardrail for any path that assigns a category (chat, receipts, queue
+    replies): a tech vendor can only be filed under TECH_CATEGORIES."""
+    if tx_type == "credit" or is_internal_transfer(category):
+        return category
+    forced = tech_category(text)
+    if forced and category not in TECH_CATEGORIES:
+        return forced
+    return category
+
+
 def has_known_merchant(text: str) -> bool:
     lowered = str(text or "").lower()
     return bool(_MERCHANT_RE.search(lowered)) or tech_category(lowered) is not None

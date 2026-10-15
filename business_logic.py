@@ -476,6 +476,8 @@ def process_receipt_image(file_data, content_type, user_id="default"):
             category = categorizer.categorize_one(
                 converted_amount, vendor, transaction_data.get('description') or str(items) or vendor
             )["category"]
+        category = categorizer.enforce_tech_taxonomy(
+            f"{vendor} {transaction_data.get('description') or ''}", category)
         transaction_data['category'] = category
 
         tx_id = f"trans_{os.urandom(4).hex()}"
