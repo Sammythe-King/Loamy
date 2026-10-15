@@ -104,31 +104,37 @@ const ReviewQueuePage = () => {
     setTimeout(() => setResolvedNote(null), 4000);
   };
 
-  const handleResolve = async (id, category) => {
-    if (!category) return;
+  // Returns Loamy's follow-up question when the note was too vague, else null.
+  const submitResolution = async (id, reply, category) => {
     setSubmittingId(id);
     setError(null);
     try {
-      const res = await resolveReviewItem(id, "", category);
-      if (res.status === "success") {
-        showNote(res.data?.confirmation || "Logged.");
-        const logged = items.find((it) => it.id === id);
-        if (logged) {
-          setResolved((prev) => [
-            { ...logged, category: res.data?.category || category, user_reply: "", resolved_at: new Date().toISOString() },
-            ...prev,
-          ]);
-        }
-        setItems((prev) => prev.filter((it) => it.id !== id));
-      } else {
+      const res = await resolveReviewItem(id, reply, category);
+      if (res.status !== "success") {
         setError(res.error || "Could not save your choice.");
+        return "Sorry, I couldn't save that. Please try again.";
       }
+      if (res.data?.resolved === false) return res.data.reply;
+      showNote(res.data?.confirmation || "Logged.");
+      const logged = items.find((it) => it.id === id);
+      if (logged) {
+        setResolved((prev) => [
+          { ...logged, category: res.data?.category || category, user_reply: reply, resolved_at: new Date().toISOString() },
+          ...prev,
+        ]);
+      }
+      setItems((prev) => prev.filter((it) => it.id !== id));
+      return null;
     } catch {
       setError("Network error. Please try again.");
+      return "I couldn't reach the server. Please try again.";
     } finally {
       setSubmittingId(null);
     }
   };
+
+  const handleResolve = (id, category) => (category ? submitResolution(id, "", category) : null);
+  const handleReply = (id, text) => submitResolution(id, text, "");
 
   const handleDismiss = async (id) => {
     try {
@@ -213,6 +219,7 @@ const ReviewQueuePage = () => {
                 item={item}
                 busy={submittingId === item.id}
                 onResolve={handleResolve}
+                onReply={handleReply}
                 onDismiss={handleDismiss}
               />
             ))}

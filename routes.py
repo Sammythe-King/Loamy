@@ -62,6 +62,7 @@ from business_logic import (
     process_receipt_image,
     load_user_emails,
     compute_bank_snapshot,
+    pick_latest_balance_alert,
     format_snapshot_for_ai,
     load_ledger_transactions,
     LEDGER_SOURCE_LABELS,
@@ -612,6 +613,7 @@ async def get_dashboard_data(user_id: str = "default"):
             # (Supabase-primary with ChromaDB fallback) so the dashboard, chat,
             # and WhatsApp all read the exact same per-user email set.
             bank_balances = {}  # Track latest balance per bank
+            balance_alerts = {}  # Alerts carrying a balance, grouped by bank
             parsed_emails = load_user_emails(user_id)
 
             print(f"[v0] Dashboard: Parsed {len(parsed_emails)} emails for {user_id}")
@@ -637,15 +639,7 @@ async def get_dashboard_data(user_id: str = "default"):
                     # "Current Balance" reflect the true latest balance instead of
                     # whichever same-day email happened to be parsed first.
                     if balance > 0:
-                        existing = bank_balances.get(bank_name)
-                        this_key = (internal_ms, date)
-                        if existing is None or this_key > (existing.get('internal_ms', 0), existing.get('date', '')):
-                            bank_balances[bank_name] = {
-                                'balance': balance,
-                                'date': date,
-                                'internal_ms': internal_ms,
-                                'currency': email.get('currency', 'NGN')
-                            }
+                        balance_alerts.setdefault(bank_name, []).append(email)
 
                     # Add ALL bank transactions (both credit and debit)
                     if amount > 0:
@@ -710,6 +704,16 @@ async def get_dashboard_data(user_id: str = "default"):
                                     'suggested_categories': [c for c in categorizer.STANDARD_CATEGORIES if c != categorizer.UNCATEGORIZED]
                                 })
             
+            for bank_name, bank_alerts in balance_alerts.items():
+                picked = pick_latest_balance_alert(bank_alerts)
+                if picked:
+                    bank_balances[bank_name] = {
+                        'balance': float(picked.get('balance') or 0),
+                        'date': picked.get('date', ''),
+                        'internal_ms': int(picked.get('internal_date_ms', 0) or 0),
+                        'currency': picked.get('currency', 'NGN'),
+                    }
+
             for bank_name, data in bank_balances.items():
                 accounts.append({
                     'name': bank_name,
@@ -1572,37 +1576,22 @@ async def resolve_review_item(data: dict):
         meta = result["metadatas"][0]
         vendor = meta.get("vendor", "")
 
-        # Use Gemini ONLY to detect the category from the free-text reply (intent extraction).
-        category = explicit_category or "Other"
-        try:
-            if not explicit_category:
-                classify_prompt = f"""You are categorizing an expense based on a short user note.
-Vendor: {vendor}
-User's note: "{reply}"
-
-Pick the SINGLE best category from this list ONLY:
-Stock, Groceries, Ingredients, Transport, Bills, Salaries, Equipment, Rent, Marketing, Food, Shopping, Hardware, Electronics, Personal Expenses, Other
-
-If the note describes a personal (non-business) purchase, choose "Personal Expenses".
-
-Reply with ONLY the category name, nothing else."""
-                ai_resp = model.generate_content(classify_prompt)
-                candidate = (ai_resp.text or "").strip().split("\n")[0].strip()
-                # Longer names first so "Personal Expenses" matches before "Personal".
-                valid = ["Personal Expenses", "Electronics", "Hardware", "Stock", "Groceries",
-                         "Ingredients", "Transport", "Bills", "Salaries", "Equipment", "Rent",
-                         "Marketing", "Food", "Shopping", "Other"]
-                candidate_lower = candidate.lower()
-                for v in valid:
-                    if v.lower() in candidate_lower:
-                        category = v
-                        break
-                # Safety net: if the user literally wrote "personal", honor it even if
-                # the model picked something else.
-                if "personal" in reply.lower():
-                    category = "Personal Expenses"
-        except Exception as e:
-            print(f"[REVIEW] Category classify error: {e}")
+        tx_type = meta.get("transaction_type") or "debit"
+        category = explicit_category
+        ai_reply = ""
+        if not explicit_category:
+            understood = await asyncio.to_thread(
+                categorizer.interpret_note, vendor, meta.get("amount", 0), tx_type, reply
+            )
+            category = understood.get("category")
+            ai_reply = understood.get("reply") or ""
+            if not category:
+                # Too vague: keep the item open and ask a follow-up in the chat.
+                return {
+                    "status": "success",
+                    "data": {"resolved": False, "reply": ai_reply or "What was this money for?"},
+                    "error": None,
+                }
 
         # 1. Close the review item
         meta["status"] = "resolved"
@@ -1649,10 +1638,10 @@ Reply with ONLY the category name, nothing else."""
         except Exception as e:
             print(f"[REVIEW] Vendor memory save error: {e}")
 
-        confirmation = f"Got it \u2014 logged \u20a6{float(meta.get('amount', 0)):,.0f} to {vendor} under {category}. I'll remember {vendor} next time."
+        confirmation = ai_reply or f"Got it \u2014 logged \u20a6{float(meta.get('amount', 0)):,.0f} under {category}."
         return {
             "status": "success",
-            "data": {"category": category, "vendor": vendor, "confirmation": confirmation},
+            "data": {"resolved": True, "category": category, "vendor": vendor, "confirmation": confirmation},
             "error": None
         }
     except Exception as e:
@@ -3356,14 +3345,10 @@ def _summarize_bank_emails(emails):
     debits = sum(_safe_float(e.get("amount")) for e in real if e.get("transaction_type") != "credit")
     transfers_out = sum(_safe_float(e.get("amount")) for e in internal if e.get("transaction_type") != "credit")
     transfers_in = sum(_safe_float(e.get("amount")) for e in internal if e.get("transaction_type") == "credit")
-    latest_balance = None
-    last_activity = None
-    for email in sorted(emails, key=_alert_sort_key, reverse=True):
-        last_activity = last_activity or email.get("date")
-        balance = _safe_float(email.get("balance"))
-        if balance > 0:
-            latest_balance = balance
-            break
+    ordered = sorted(emails, key=_alert_sort_key, reverse=True)
+    last_activity = ordered[0].get("date") if ordered else None
+    picked = pick_latest_balance_alert(emails)
+    latest_balance = _safe_float(picked.get("balance")) if picked else None
     return {
         "balance": latest_balance,
         "transaction_count": len(emails),

@@ -614,6 +614,42 @@ def _load_user_emails_raw(user_id: str) -> list:
 
 
 
+def pick_latest_balance_alert(emails):
+    """The alert that carries an account's TRUE current balance, or None.
+
+    A bank's balance is a snapshot taken when the transaction posted, but the
+    alert email can land later (a ₦50 stamp-duty email arriving after a credit
+    still reports the pre-credit balance). Ordering by received time alone then
+    picks a stale balance. Instead, follow the balance chain: an alert is
+    "followed" when another alert's opening balance (post balance -/+ amount)
+    equals its closing balance. The chain head is the current balance; received
+    time only breaks ties between unlinked heads.
+    """
+    candidates = []
+    for email in emails:
+        try:
+            balance = float(email.get('balance') or 0)
+            amount = float(email.get('amount') or 0)
+        except (TypeError, ValueError):
+            continue
+        if balance <= 0:
+            continue
+        opening = None
+        if amount > 0:
+            opening = balance - amount if email.get('transaction_type') == 'credit' else balance + amount
+        candidates.append((email, balance, opening))
+    if not candidates:
+        return None
+
+    heads = [
+        email for i, (email, balance, _) in enumerate(candidates)
+        if not any(j != i and other_open is not None and abs(other_open - balance) < 0.01
+                   for j, (_, _, other_open) in enumerate(candidates))
+    ]
+    pool = heads or [c[0] for c in candidates]
+    return max(pool, key=lambda e: (int(e.get('internal_date_ms') or 0), e.get('date') or ''))
+
+
 def compute_bank_snapshot(user_id: str) -> dict:
     """The ONE balance/cash-flow computation shared by every chat surface.
 
@@ -635,6 +671,7 @@ def compute_bank_snapshot(user_id: str) -> dict:
         parsed = load_user_emails(user_id)
 
         bank_balances = {}
+        balance_alerts = {}
         alerts = []
         for email in parsed:
             if not (email.get('is_bank_alert') is True or email.get('is_bank_alert') == 'true'):
@@ -649,10 +686,7 @@ def compute_bank_snapshot(user_id: str) -> dict:
             category = email.get('category', '') or ''
 
             if balance > 0:
-                existing = bank_balances.get(bank)
-                key = (internal_ms, date)
-                if existing is None or key > (existing['internal_ms'], existing['date']):
-                    bank_balances[bank] = {'balance': balance, 'date': date, 'internal_ms': internal_ms}
+                balance_alerts.setdefault(bank, []).append(email)
 
             if amount > 0:
                 is_transfer = categorizer.is_internal_transfer(category)
@@ -694,6 +728,15 @@ def compute_bank_snapshot(user_id: str) -> dict:
                 'internal_transfer': is_transfer,
             })
         snap['ledger_count'] = len(ledger_rows)
+
+        for bank, bank_alerts in balance_alerts.items():
+            picked = pick_latest_balance_alert(bank_alerts)
+            if picked:
+                bank_balances[bank] = {
+                    'balance': float(picked.get('balance') or 0),
+                    'date': picked.get('date', '') or '',
+                    'internal_ms': int(picked.get('internal_date_ms', 0) or 0),
+                }
 
         snap['balance'] = round(sum(b['balance'] for b in bank_balances.values()), 2)
         if bank_balances:

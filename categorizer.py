@@ -328,6 +328,74 @@ def categorize_batch(items: list) -> list:
     return results
 
 
+NOTE_EXPENSE_CATEGORIES = [
+    "Groceries", "Dining & Food", "Transportation", "Utilities & Bills",
+    "Entertainment & Subscriptions", "Software & Subscriptions", "Business Tools",
+    "Shopping", "Bank Charges", "Personal Expenses", "Business Expenses",
+    "Family & Gifts", "Loan Repayment", "Transfers & Cash",
+]
+NOTE_INCOME_CATEGORIES = [
+    "Business Income", "Personal Income", "Salary", "Loan Repayment Received",
+    "Gifts & Support Received", "Refund",
+]
+_NOTE_CANONICAL = {c.lower(): c for c in NOTE_EXPENSE_CATEGORIES + NOTE_INCOME_CATEGORIES}
+
+
+def interpret_note(vendor, amount, tx_type, note) -> dict:
+    """Understand a free-text note about ONE transaction and file it.
+
+    Returns {"category": <label or None>, "reply": <short message to the user>}.
+    category is None when the note is too vague; reply is then a follow-up
+    question and the item must stay open. Never raises."""
+    is_credit = tx_type == "credit"
+    allowed = NOTE_INCOME_CATEGORIES if is_credit else NOTE_EXPENSE_CATEGORIES
+    direction = "money received (credit)" if is_credit else "money spent (debit)"
+    model = _get_model()
+    if model is None:
+        return {"category": None, "reply": "I can't read notes right now. Please try again in a moment."}
+
+    prompt = f"""You are Loamy, a friendly money assistant for a Nigerian small-business owner.
+The user is explaining ONE bank transaction in their own words. Work out what it was and file it.
+
+Transaction: {direction}, amount N{float(amount or 0):,.2f}, bank narration: "{vendor}"
+User's note: "{note}"
+
+Allowed categories (choose exactly one string from this list, nothing else):
+{json.dumps(allowed)}
+
+Guidance:
+- Selling something personal (e.g. "pay for the shoes I sold") -> "Personal Income".
+  Money from customers or sales of business stock/services -> "Business Income".
+- Someone paying back money they owed (e.g. "repayment from my brother") -> "Loan Repayment Received".
+- Gifts, allowance or help from family/friends -> "Gifts & Support Received".
+- Wages -> "Salary". A reversed or returned payment -> "Refund".
+- For spending: personal non-business things -> "Personal Expenses"; business costs -> "Business Expenses";
+  money given to family or friends -> "Family & Gifts"; paying back a loan -> "Loan Repayment".
+- If the note truly does not say what the money was for, set category to null and ask ONE short
+  follow-up question in "reply".
+
+Return ONLY JSON: {{"category": "<allowed category or null>", "reply": "<one friendly sentence confirming what you logged, or the follow-up question>"}}"""
+
+    try:
+        response = model.generate_content(
+            prompt,
+            generation_config={"response_mime_type": "application/json", "temperature": 0.2},
+        )
+        parsed = json.loads(response.text or "{}")
+    except Exception as e:
+        print(f"[categorizer] interpret_note failed: {e}")
+        return {"category": None, "reply": "I couldn't quite understand that. Could you say a bit more about it?"}
+
+    raw = str(parsed.get("category") or "").strip().lower()
+    category = _NOTE_CANONICAL.get(raw)
+    if category and category not in allowed:
+        category = None
+    reply = str(parsed.get("reply") or "").strip()
+    if not category and not reply:
+        reply = "What was this money for?"
+    return {"category": category, "reply": reply}
+
+
 def categorize_one(amount, vendor, description, tx_type="debit") -> dict:
     return categorize_batch([{
         "amount": amount, "vendor": vendor, "description": description, "type": tx_type,
