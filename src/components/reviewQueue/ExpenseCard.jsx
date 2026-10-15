@@ -1,28 +1,36 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faWandMagicSparkles, faCheck } from "@fortawesome/free-solid-svg-icons";
+import { faWandMagicSparkles, faCheck, faPaperPlane } from "@fortawesome/free-solid-svg-icons";
 
-export const EXPENSE_CATEGORIES = [
-  "Groceries",
-  "Dining & Food",
-  "Transportation",
-  "Utilities & Bills",
-  "Entertainment & Subscriptions",
-  "Software & Subscriptions",
-  "Business Tools",
-  "Shopping",
-  "Bank Charges",
-  "Personal Expenses",
-  "Transfers & Cash",
-];
+const CREDIT_EXAMPLES = "e.g. repayment from my brother, or pay for the shoes I sold";
+const DEBIT_EXAMPLES = "e.g. sugar for the shop, or lunch with friends";
 
-const ExpenseCard = ({ item, busy, onResolve, onDismiss }) => {
-  const [choice, setChoice] = useState("");
+const ExpenseCard = ({ item, busy, onResolve, onReply, onDismiss }) => {
+  const [draft, setDraft] = useState("");
+  const [messages, setMessages] = useState([]);
+  const threadRef = useRef(null);
   const suggestion = item.suggested_category || "";
-  const options = suggestion && !EXPENSE_CATEGORIES.includes(suggestion)
-    ? [suggestion, ...EXPENSE_CATEGORIES]
-    : EXPENSE_CATEGORIES;
   const isCredit = item.transaction_type === "credit";
+
+  useEffect(() => {
+    if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight;
+  }, [messages, busy]);
+
+  const send = async (event) => {
+    event.preventDefault();
+    const text = draft.trim();
+    if (!text || busy) return;
+    setDraft("");
+    setMessages((prev) => [...prev, { from: "user", text }]);
+    const answer = await onReply(item.id, text);
+    if (answer) setMessages((prev) => [...prev, { from: "loamy", text: answer }]);
+  };
+
+  const onKeyDown = (event) => {
+    if (event.key !== "Enter" || event.shiftKey) return;
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    send(event);
+  };
 
   return (
     <article className="rqt-card">
@@ -54,27 +62,39 @@ const ExpenseCard = ({ item, busy, onResolve, onDismiss }) => {
         </div>
       )}
 
-      <div className="rqt-select-row">
-        <select
-          value={choice}
-          onChange={(e) => setChoice(e.target.value)}
-          disabled={busy}
-          aria-label={`Category for ${item.vendor || "transaction"}`}
-        >
-          <option value="">Choose a category...</option>
-          {options.map((c) => (
-            <option key={c} value={c}>{c}</option>
-          ))}
-        </select>
-        <button
-          type="button"
-          className="rqt-secondary"
-          onClick={() => onResolve(item.id, choice)}
-          disabled={busy || !choice}
-        >
-          Save
-        </button>
+      <div className="rqt-thread" ref={threadRef} aria-live="polite">
+        <div className="rqt-bubble is-loamy">
+          {isCredit
+            ? "Money came in. Who or what was it from?"
+            : "What was this money spent on?"}
+        </div>
+        {messages.map((m, i) => (
+          <div key={i} className={`rqt-bubble ${m.from === "user" ? "is-user" : "is-loamy"}`}>
+            {m.text}
+          </div>
+        ))}
+        {busy && <div className="rqt-bubble is-loamy is-typing">Thinking...</div>}
       </div>
+
+      <form className="rqt-chat-row" onSubmit={send}>
+        <textarea
+          rows={1}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={onKeyDown}
+          disabled={busy}
+          placeholder={isCredit ? CREDIT_EXAMPLES : DEBIT_EXAMPLES}
+          aria-label={`Tell Loamy about ${item.vendor || "this transaction"}`}
+        />
+        <button
+          type="submit"
+          className="rqt-send"
+          disabled={busy || !draft.trim()}
+          aria-label="Send"
+        >
+          <FontAwesomeIcon icon={faPaperPlane} />
+        </button>
+      </form>
 
       <button type="button" className="rqt-ghost" onClick={() => onDismiss(item.id)} disabled={busy}>
         Dismiss
