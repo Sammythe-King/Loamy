@@ -31,6 +31,11 @@ import "./ReviewQueueTabs.css";
 const RECENT_PAGE_SIZE = 8;
 const ACTIVITY_PAGE_SIZE = 10;
 
+const vendorInitial = (vendor) => {
+  const match = (vendor || "").match(/[A-Za-z0-9]/);
+  return match ? match[0].toUpperCase() : "#";
+};
+
 const ReviewQueuePage = () => {
   // Use the REAL logged-in user, not a hardcoded "default". The ChatPage widget
   // and dashboard key everything to the session user_id (e.g. user_377bad...),
@@ -237,7 +242,9 @@ const ReviewQueuePage = () => {
           <ul className="rqt-recent-list">
             {recentPaged.pageItems.map((item) => (
               <li key={item.id} className="rqt-recent-row">
-                <FontAwesomeIcon icon={faCheckCircle} className="rqt-recent-check" />
+                <span className="rqt-recent-avatar" aria-hidden="true">
+                  {vendorInitial(item.vendor)}
+                </span>
                 <div className="rqt-recent-main">
                   <span className="rqt-recent-vendor" title={item.vendor}>{item.vendor || "Transaction"}</span>
                   <span className="rqt-recent-date">{item.date}</span>
