@@ -338,21 +338,45 @@ NOTE_INCOME_CATEGORIES = [
     "Business Income", "Personal Income", "Salary", "Loan Repayment Received",
     "Gifts & Support Received", "Refund",
 ]
-_NOTE_CANONICAL = {c.lower(): c for c in NOTE_EXPENSE_CATEGORIES + NOTE_INCOME_CATEGORIES}
+_NOTE_CANONICAL = {
+    c.lower(): c for c in NOTE_EXPENSE_CATEGORIES + NOTE_INCOME_CATEGORIES + [INTERNAL_TRANSFER]
+}
+
+# Catches "intertransfer", "inter-transfer", "internal transfer", "between my accounts",
+# "my other account", "moved it to my wema account", including common misspellings.
+_INTERNAL_NOTE_RE = re.compile(
+    r"(inter[\s-]?trans|internal[\s-]?trans|own[\s-]?account|between\s+(my|our)\s+accounts?|"
+    r"(my|me)\s+(other|own|second)\s+(bank\s+)?(account|bank)|"
+    r"(moved?|sent|transferred?)\s+(it\s+)?(to|from)\s+my\s+(\w+\s+){0,2}(account|bank|wallet))",
+    re.IGNORECASE,
+)
+
+
+def note_means_internal_transfer(note) -> bool:
+    return bool(_INTERNAL_NOTE_RE.search(str(note or "")))
 
 
 def interpret_note(vendor, amount, tx_type, note) -> dict:
     """Understand a free-text note about ONE transaction and file it.
 
-    Returns {"category": <label or None>, "reply": <short message to the user>}.
+    Returns {"category": <label or None>, "reply": <short message>, "unrelated": <bool>}.
     category is None when the note is too vague; reply is then a follow-up
-    question and the item must stay open. Never raises."""
+    question and the item must stay open. unrelated is True when the message
+    is not about this transaction at all (e.g. a general money question).
+    Never raises."""
     is_credit = tx_type == "credit"
-    allowed = NOTE_INCOME_CATEGORIES if is_credit else NOTE_EXPENSE_CATEGORIES
+    if note_means_internal_transfer(note):
+        return {
+            "category": INTERNAL_TRANSFER,
+            "reply": "Got it, that's money moved between your own accounts. "
+                     "I've moved it to Internal Transfers so you can pick the account.",
+            "unrelated": False,
+        }
+    allowed = (NOTE_INCOME_CATEGORIES if is_credit else NOTE_EXPENSE_CATEGORIES) + [INTERNAL_TRANSFER]
     direction = "money received (credit)" if is_credit else "money spent (debit)"
     model = _get_model()
     if model is None:
-        return {"category": None, "reply": "I can't read notes right now. Please try again in a moment."}
+        return {"category": None, "reply": "I can't read notes right now. Please try again in a moment.", "unrelated": False}
 
     prompt = f"""You are Loamy, a friendly money assistant for a Nigerian small-business owner.
 The user is explaining ONE bank transaction in their own words. Work out what it was and file it.
@@ -371,10 +395,14 @@ Guidance:
 - Wages -> "Salary". A reversed or returned payment -> "Refund".
 - For spending: personal non-business things -> "Personal Expenses"; business costs -> "Business Expenses";
   money given to family or friends -> "Family & Gifts"; paying back a loan -> "Loan Repayment".
+- Money moved between the user's own accounts or wallets -> "Internal Transfer".
+- Several messages may be joined with " | " (oldest first); read them together as one explanation.
 - If the note truly does not say what the money was for, set category to null and ask ONE short
   follow-up question in "reply".
+- If the message is clearly NOT about this transaction (for example a general question about their
+  finances), set category to null and "unrelated" to true.
 
-Return ONLY JSON: {{"category": "<allowed category or null>", "reply": "<one friendly sentence confirming what you logged, or the follow-up question>"}}"""
+Return ONLY JSON: {{"category": "<allowed category or null>", "unrelated": false, "reply": "<one friendly sentence confirming what you logged, or the follow-up question>"}}"""
 
     try:
         response = model.generate_content(
@@ -384,16 +412,18 @@ Return ONLY JSON: {{"category": "<allowed category or null>", "reply": "<one fri
         parsed = json.loads(response.text or "{}")
     except Exception as e:
         print(f"[categorizer] interpret_note failed: {e}")
-        return {"category": None, "reply": "I couldn't quite understand that. Could you say a bit more about it?"}
+        return {"category": None, "unrelated": False,
+                "reply": "I couldn't quite understand that. Could you say a bit more about it?"}
 
     raw = str(parsed.get("category") or "").strip().lower()
     category = _NOTE_CANONICAL.get(raw)
     if category and category not in allowed:
         category = None
     reply = str(parsed.get("reply") or "").strip()
+    unrelated = bool(parsed.get("unrelated")) and not category
     if not category and not reply:
         reply = "What was this money for?"
-    return {"category": category, "reply": reply}
+    return {"category": category, "reply": reply, "unrelated": unrelated}
 
 
 def categorize_one(amount, vendor, description, tx_type="debit") -> dict:

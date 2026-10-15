@@ -21,6 +21,7 @@ load_dotenv()
 
 import database
 import categorizer
+import review_actions
 from whatsapp import WHATSAPP_FORMAT_RULES, set_ai_handler, set_receipt_handler
 from models import (
     model,
@@ -578,6 +579,17 @@ async def chat_with_history(query: dict):
     # web chat UI. "whatsapp" appends the plain-text formatting rules below,
     # since WhatsApp renders a stray asterisk literally instead of bolding it.
     channel = query.get("channel", "web")
+
+    # If Loamy just asked about a transaction, this message may be the answer.
+    try:
+        answered = await asyncio.to_thread(review_actions.try_answer_from_chat, user_id, user_msg)
+    except Exception as e:
+        print(f"[CHAT-CLARIFY] answer check failed: {e}")
+        answered = None
+    if answered:
+        if channel != "whatsapp":
+            await asyncio.to_thread(record_chat_turn, user_id, user_msg, answered, "app", datetime.utcnow())
+        return {"reply": answered, "invoice_created": False, "categorized_count": 1}
     
     # Pre-calculate accurate date information so AI doesn't have to guess
     from calendar import monthrange
@@ -1349,6 +1361,14 @@ async def chat_with_history(query: dict):
                 )
         except Exception as e:
             print(f"[CHAT-CATEGORIZE] bank charges fallback failed: {e}")
+
+        # If Loamy has an unanswered transaction question, bring it up naturally.
+        try:
+            follow_up = await asyncio.to_thread(review_actions.next_question, user_id)
+            if follow_up:
+                reply_text = f"{reply_text}\n\n{follow_up}".strip()
+        except Exception as e:
+            print(f"[CHAT-CLARIFY] could not append question: {e}")
 
         # WhatsApp turns are recorded by whatsapp.py after delivery (it knows the
         # original message, not the snapshot-prefixed prompt), so only log web here.

@@ -379,6 +379,25 @@ def set_transfer_destination(review_id: str, destination: str) -> dict:
             "confirmation": f"Logged {_naira(meta.get('amount'))} as a transfer to {destination}. It won't count as spending."}}
 
 
+def stage_as_transfer(review_id: str, meta: dict, note: str = "") -> None:
+    """The user said an expense-queue item is money moved between their own
+    accounts: move it to the Internal Transfers queue to pick the other account."""
+    amount = meta.get("amount")
+    bank = f"{meta['bank_name']} " if meta.get("bank_name") else ""
+    if meta.get("transaction_type") == "credit":
+        nudge = f"Confirm source account for {_naira(amount)} {bank}credit."
+    else:
+        nudge = f"Confirm destination account for {_naira(amount)} {bank}debit."
+    meta.update({
+        "item_kind": KIND_TRANSFER, "transfer_stage": STAGE_SINGLE, "pair_id": "",
+        "transfer_rejected": False, "status": "pending", "category": "",
+        "user_reply": note, "resolved_at": "", "nudge": nudge,
+    })
+    for key in ("counterpart_source_id", "counterpart_bank", "bank_name", "destination_account"):
+        meta.setdefault(key, "")
+    review_queue_collection.update(ids=[review_id], metadatas=[meta])
+
+
 def reject_transfer(review_id: str) -> dict:
     """The user says this is a real expense/income: send it to the Expense Queue
     and make sure the matcher never stages it again."""

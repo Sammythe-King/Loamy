@@ -20,15 +20,15 @@ const ExpenseCard = ({ item, busy, onResolve, onReply, onDismiss }) => {
     event.preventDefault();
     const text = draft.trim();
     if (!text || busy) return;
+    const earlier = messages.filter((m) => m.from === "user").map((m) => m.text);
     setDraft("");
     setMessages((prev) => [...prev, { from: "user", text }]);
-    const answer = await onReply(item.id, text);
+    const answer = await onReply(item.id, text, earlier);
     if (answer) setMessages((prev) => [...prev, { from: "loamy", text: answer }]);
   };
 
   const onKeyDown = (event) => {
-    if (event.key !== "Enter" || event.shiftKey) return;
-    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    if (event.key !== "Enter" || event.nativeEvent.isComposing || event.keyCode === 229) return;
     send(event);
   };
 
@@ -63,22 +63,36 @@ const ExpenseCard = ({ item, busy, onResolve, onReply, onDismiss }) => {
       )}
 
       <div className="rqt-thread" ref={threadRef} aria-live="polite">
-        <div className="rqt-bubble is-loamy">
-          {isCredit
-            ? "Money came in. Who or what was it from?"
-            : "What was this money spent on?"}
-        </div>
-        {messages.map((m, i) => (
-          <div key={i} className={`rqt-bubble ${m.from === "user" ? "is-user" : "is-loamy"}`}>
-            {m.text}
+        <div className="rqt-msg is-loamy">
+          <span className="rqt-avatar" aria-hidden="true">L</span>
+          <div className="rqt-bubble is-loamy">
+            {item.nudge ||
+              (isCredit
+                ? "Money came in. Who or what was it from?"
+                : "What was this money spent on?")}
           </div>
-        ))}
-        {busy && <div className="rqt-bubble is-loamy is-typing">Thinking...</div>}
+        </div>
+        {messages.map((m, i) =>
+          m.from === "user" ? (
+            <div key={i} className="rqt-bubble is-user">{m.text}</div>
+          ) : (
+            <div key={i} className="rqt-msg is-loamy">
+              <span className="rqt-avatar" aria-hidden="true">L</span>
+              <div className="rqt-bubble is-loamy">{m.text}</div>
+            </div>
+          )
+        )}
+        {busy && (
+          <div className="rqt-msg is-loamy">
+            <span className="rqt-avatar" aria-hidden="true">L</span>
+            <div className="rqt-bubble is-loamy is-typing">Thinking...</div>
+          </div>
+        )}
       </div>
 
       <form className="rqt-chat-row" onSubmit={send}>
-        <textarea
-          rows={1}
+        <input
+          type="text"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
