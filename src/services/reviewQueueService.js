@@ -34,6 +34,27 @@ export async function resolveReviewItem(reviewId, reply) {
   return safeJson(res);
 }
 
+async function postTransferAction(path, payload) {
+  const res = await fetch(`${API_URL}/review-queue/transfer/${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return safeJson(res);
+}
+
+// Confirm a staged pair as one transfer between the user's own accounts.
+export const confirmTransferPair = (reviewId) =>
+  postTransferAction("confirm", { review_id: reviewId });
+
+// One-sided debit/credit: say which of your own accounts it went to / came from.
+export const setTransferDestination = (reviewId, destination) =>
+  postTransferAction("destination", { review_id: reviewId, destination });
+
+// "Not a transfer": send it back to the Expense Queue as a real expense/income.
+export const rejectTransfer = (reviewId) =>
+  postTransferAction("reject", { review_id: reviewId });
+
 // Dismiss/ignore a review item without categorizing it.
 export async function dismissReviewItem(reviewId) {
   const res = await fetch(`${API_URL}/review-queue/dismiss`, {

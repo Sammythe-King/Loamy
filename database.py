@@ -717,11 +717,31 @@ def get_gmail_financial_context(user_id: str, limit: int = 30) -> dict:
         month_start = today.replace(day=1)
         debits_today = debits_week = debits_month = 0.0
 
-        total_credits = total_debits = 0.0
+        # The user's own categories (Review Queue / chat) win over the raw alert,
+        # so "Internal Transfer" is honored here exactly as on every other screen.
+        import categorizer
+        try:
+            from business_logic import _review_category_overrides
+            overrides = _review_category_overrides(user_id)
+        except Exception as e:
+            print(f"[Database] category overrides unavailable: {e}")
+            overrides = {}
+        for a in alerts:
+            narration = a.get("narration") or a.get("subject") or "Transaction"
+            sid = a.get("id") or f"{str(narration).lower()[:20]}_{float(a.get('amount') or 0)}"
+            if overrides.get(sid):
+                a["category"] = overrides[sid]
+
+        total_credits = total_debits = internal_transfers = 0.0
         by_category: dict[str, float] = {}
         for a in alerts:
             amt = _to_money(a.get("amount") or 0)
             if not amt:
+                continue
+            if categorizer.is_internal_transfer(a.get("category")):
+                # Moving money between own accounts: zero net spending, not income.
+                if not _is_credit(a):
+                    internal_transfers = _to_money(internal_transfers + amt)
                 continue
             if _is_credit(a):
                 total_credits = _to_money(total_credits + amt)
@@ -749,9 +769,11 @@ def get_gmail_financial_context(user_id: str, limit: int = 30) -> dict:
                 "category": a.get("category") or categorize_narration(a.get("narration", "")),
                 "type": "income" if credit else "expense",
                 "source": "bank_alert",
+                "internal_transfer": categorizer.is_internal_transfer(a.get("category")),
             })
 
         return _ok({
+            "internal_transfers": internal_transfers,
             "bank_balance": bank_balance,
             "bank_name": bank_name,
             "last_alert_date": last_alert_date,
@@ -795,8 +817,13 @@ def get_chat_financial_context(user_id: str, limit: int = 50) -> dict:
             t = (r.get("transaction_type") or "").lower()
             return t in ("in", "income", "credit", "deposit")
 
-        total_in = sum(_to_money(r["amount"]) for r in rows if _is_income(r))
-        total_out = sum(_to_money(r["amount"]) for r in rows if not _is_income(r))
+        import categorizer
+
+        def _is_transfer(r):
+            return categorizer.is_internal_transfer(r.get("category"))
+
+        total_in = sum(_to_money(r["amount"]) for r in rows if _is_income(r) and not _is_transfer(r))
+        total_out = sum(_to_money(r["amount"]) for r in rows if not _is_income(r) and not _is_transfer(r))
         balance = _to_money(total_in - total_out)
 
         # Deterministic time-window spending, computed here in code rather than
@@ -810,7 +837,7 @@ def get_chat_financial_context(user_id: str, limit: int = 50) -> dict:
 
         by_category: dict[str, float] = {}
         for r in rows:
-            if not _is_income(r):
+            if not _is_income(r) and not _is_transfer(r):
                 cat = r.get("category") or "other"
                 amt = _to_money(r["amount"])
                 by_category[cat] = _to_money(by_category.get(cat, 0) + amt)
@@ -834,6 +861,7 @@ def get_chat_financial_context(user_id: str, limit: int = 50) -> dict:
                 "category": r.get("category") or "other",
                 "type": "income" if _is_income(r) else "expense",
                 "source": transaction_source(r),
+                "internal_transfer": _is_transfer(r),
             })
 
         # --- Merge in Gmail bank-alert data -----------------------------------
@@ -877,6 +905,7 @@ def get_chat_financial_context(user_id: str, limit: int = 50) -> dict:
                 "spent_today": spent_today,
                 "spent_this_week": spent_week,
                 "spent_this_month": spent_month,
+                "internal_transfers": gmail.get("internal_transfers", 0.0),
                 "today_date": today.isoformat(),
                 "transaction_count": len(rows) + gmail.get("alert_count", 0),
                 "ledger_transaction_count": len(rows),

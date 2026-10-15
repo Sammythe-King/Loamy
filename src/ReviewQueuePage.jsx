@@ -10,6 +10,9 @@ import {
   resolveReviewItem,
   dismissReviewItem,
   seedDemoReview,
+  confirmTransferPair,
+  setTransferDestination,
+  rejectTransfer,
 } from "./services/reviewQueueService";
 import "./InvoicesPage.css";
 import "./ReviewQueuePage.css";
@@ -37,6 +40,9 @@ const ReviewQueuePage = () => {
   });
 
   const [items, setItems] = useState([]);
+  const [transfers, setTransfers] = useState([]);
+  const [accounts, setAccounts] = useState([]);
+  const [destinations, setDestinations] = useState({});
   const [resolved, setResolved] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -56,6 +62,8 @@ const ReviewQueuePage = () => {
       const res = await fetchReviewQueue(userId);
       if (res.status === "success") {
         setItems(res.data?.items || []);
+        setTransfers(res.data?.transfers || []);
+        setAccounts(res.data?.accounts || []);
         setResolved(res.data?.resolved || []);
       } else {
         setError(res.error || "Could not load the review queue.");
@@ -130,7 +138,51 @@ const ReviewQueuePage = () => {
     await loadQueue(true);
   };
 
-  const count = items.length;
+  const runTransferAction = async (id, action, successNote) => {
+    setSubmittingId(id);
+    setError(null);
+    try {
+      const res = await action();
+      if (res.status === "success") {
+        setResolvedNote(successNote);
+        setTimeout(() => setResolvedNote(null), 4000);
+        await loadQueue(false);
+      } else {
+        setError(res.error || "Could not update this transfer.");
+      }
+    } catch {
+      setError("Network error. Please try again.");
+    } finally {
+      setSubmittingId(null);
+    }
+  };
+
+  const handleConfirmTransfer = (id) =>
+    runTransferAction(id, () => confirmTransferPair(id), "Marked as a transfer between your own accounts.");
+
+  const handleRejectTransfer = (id) =>
+    runTransferAction(id, () => rejectTransfer(id), "Moved back to your expense queue.");
+
+  const handleDestination = (id) => {
+    const destination = destinations[id];
+    if (!destination) return;
+    runTransferAction(id, () => setTransferDestination(id, destination), "Transfer linked to your account.");
+  };
+
+  // A candidate pair has two legs in the queue: show it once.
+  const transferCards = (() => {
+    const seen = new Set();
+    return transfers.filter((t) => {
+      if (t.transfer_stage !== "candidate" || !t.pair_id) return true;
+      if (seen.has(t.pair_id)) return false;
+      seen.add(t.pair_id);
+      return true;
+    });
+  })();
+
+  const expenseCount = items.length;
+  const transferCount = transferCards.length;
+  const count = expenseCount + transferCount;
 
   return (
     <div className="invoices-page">
@@ -173,7 +225,7 @@ const ReviewQueuePage = () => {
         <header className="invoices-header">
           <div>
             <h1>Review Queue</h1>
-            <p>Transactions Loamy needs your help categorizing</p>
+            <p>Transactions and transfers Loamy needs your help with</p>
           </div>
         </header>
 
@@ -220,7 +272,95 @@ const ReviewQueuePage = () => {
         {!loading && !error && (count > 0 || resolved.length > 0) && (
         <div className={`rq-layout ${resolved.length > 0 ? "has-aside" : ""}`}>
         <div className="rq-primary">
-        {count > 0 && (
+        {transferCount > 0 && (
+          <section className="rq-transfers" aria-label="Possible transfers between your accounts">
+            <div className="rq-section-head">
+              <h2>Transfers between your accounts</h2>
+              <span className="rq-history-count">{transferCount}</span>
+            </div>
+            <p className="rq-section-sub">
+              Money you move between your own accounts isn&apos;t spending or income, so it stays out of your totals once confirmed.
+            </p>
+            <div className="rq-list">
+              {transferCards.map((t) => {
+                const busy = submittingId === t.id;
+                const isPair = t.transfer_stage === "candidate";
+                return (
+                  <div key={t.id} className="rq-card rq-transfer-card">
+                    <div className="rq-bubble">
+                      <div className="rq-avatar">L</div>
+                      <p>{t.nudge}</p>
+                    </div>
+                    <div className="rq-meta">
+                      <span className="rq-amount">&#8358;{Number(t.amount).toLocaleString()}</span>
+                      {t.date && <span className="rq-date">{t.date}</span>}
+                      {isPair && t.counterpart_bank && (
+                        <span className="rq-transfer-route">{t.bank_name} &rarr; {t.counterpart_bank}</span>
+                      )}
+                    </div>
+                    {isPair ? (
+                      <div className="rq-transfer-actions">
+                        <button
+                          type="button"
+                          className="rq-transfer-primary"
+                          onClick={() => handleConfirmTransfer(t.id)}
+                          disabled={busy}
+                        >
+                          Yes, it&apos;s my own transfer
+                        </button>
+                        <button
+                          type="button"
+                          className="rq-transfer-secondary"
+                          onClick={() => handleRejectTransfer(t.id)}
+                          disabled={busy}
+                        >
+                          Not a transfer
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="rq-reply-row">
+                          <select
+                            value={destinations[t.id] || ""}
+                            onChange={(e) => setDestinations((prev) => ({ ...prev, [t.id]: e.target.value }))}
+                            disabled={busy}
+                            aria-label={t.transaction_type === "credit" ? "Source account" : "Destination account"}
+                          >
+                            <option value="">
+                              {t.transaction_type === "credit" ? "Came from which account?" : "Went to which account?"}
+                            </option>
+                            {accounts.map((a) => (
+                              <option key={a.id} value={a.name}>{a.name}</option>
+                            ))}
+                            <option value="Another account of mine">Another account of mine</option>
+                          </select>
+                          <button
+                            type="button"
+                            className="rq-send"
+                            onClick={() => handleDestination(t.id)}
+                            disabled={busy || !destinations[t.id]}
+                            aria-label="Confirm account"
+                          >
+                            {busy ? <span className="rq-spinner" /> : <FontAwesomeIcon icon={faCheckCircle} />}
+                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          className="rq-dismiss"
+                          onClick={() => handleRejectTransfer(t.id)}
+                          disabled={busy}
+                        >
+                          Not a transfer
+                        </button>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+        {expenseCount > 0 && (
           <div className="rq-list">
             {items.map((item) => (
               <div key={item.id} className="rq-card">

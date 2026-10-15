@@ -24,6 +24,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Form, Background
 
 import database
 import categorizer
+import transfers
 import chat_service
 from models import (
     model,
@@ -792,7 +793,13 @@ async def get_dashboard_data(user_id: str = "default"):
             if category.strip().lower() in ('banking', 'other', 'uncategorized', ''):
                 category = categorizer.UNCATEGORIZED
                 tx['category'] = category
-            
+
+            if categorizer.is_internal_transfer(category):
+                # Own-account movement: shown in activity, never spending/income.
+                tx['internal_transfer'] = True
+                recent_transactions.append(tx)
+                continue
+
             if tx_type == 'credit':
                 cash_in += amount
             elif tx_type == 'debit':
@@ -808,7 +815,9 @@ async def get_dashboard_data(user_id: str = "default"):
         # 3. Manual cash entries + scanned receipts, from the unified Supabase
         #    ledger (stored in NGN already, so no conversion here).
         for tx in load_ledger_transactions(user_id):
-            if tx['type'] == 'credit':
+            if categorizer.is_internal_transfer(tx['category']):
+                tx['internal_transfer'] = True
+            elif tx['type'] == 'credit':
                 cash_in += tx['amount']
             else:
                 cash_out += tx['amount']
@@ -1459,21 +1468,37 @@ async def get_review_queue(user_id: str):
             return review_queue_collection.get(where={"user_id": user_id})
         results = await asyncio.to_thread(_load)
         items = []
+        transfers = []
         resolved = []
         for i in range(len(results["ids"])):
             meta = results["metadatas"][i]
             status = meta.get("status")
+            is_transfer = meta.get("item_kind") == "transfer"
             if status == "pending":
-                items.append({"id": results["ids"][i], **meta})
-            elif status == "resolved":
+                (transfers if is_transfer else items).append({"id": results["ids"][i], **meta})
+            elif status == "resolved" and not (is_transfer and meta.get("transfer_stage") == "linked"
+                                               and meta.get("user_reply") == "Auto-matched internal transfer"):
                 resolved.append({"id": results["ids"][i], **meta})
         items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        transfers.sort(key=lambda x: (x.get("pair_id") or x.get("id"), x.get("created_at", "")), reverse=True)
         # Newest logged first; cap the history so the page stays light.
         resolved.sort(key=lambda x: x.get("resolved_at", ""), reverse=True)
         resolved = resolved[:20]
+
+        accounts = []
+        try:
+            views = [_connected_account_view(r) for r in get_connected_bank_accounts(user_id)]
+            accounts = [
+                {"id": v["id"],
+                 "name": f"{v['nickname'] or v['bank_name']}" + (f" (...{v['account_tail']})" if v["account_tail"] else "")}
+                for v in views
+            ]
+        except Exception as e:
+            print(f"[REVIEW] could not list accounts for transfers: {e}")
         return {
             "status": "success",
             "data": {"items": items, "count": len(items),
+                     "transfers": transfers, "transfer_count": len(transfers), "accounts": accounts,
                      "resolved": resolved, "resolved_count": len(resolved)},
             "error": None,
         }
@@ -1592,6 +1617,33 @@ Reply with ONLY the category name, nothing else."""
     except Exception as e:
         return {"status": "error", "data": None, "error": str(e)}
 
+
+
+@router.post("/review-queue/transfer/confirm")
+async def confirm_transfer(data: dict):
+    """Confirm a staged transfer pair as an Internal Transfer."""
+    review_id = data.get("review_id")
+    if not review_id:
+        return {"status": "error", "data": None, "error": "review_id is required"}
+    return await asyncio.to_thread(transfers.confirm_transfer_pair, review_id)
+
+
+@router.post("/review-queue/transfer/destination")
+async def set_transfer_destination(data: dict):
+    """Mark a one-sided debit/credit as moved to/from one of the user's own accounts."""
+    review_id = data.get("review_id")
+    if not review_id:
+        return {"status": "error", "data": None, "error": "review_id is required"}
+    return await asyncio.to_thread(transfers.set_transfer_destination, review_id, data.get("destination") or "")
+
+
+@router.post("/review-queue/transfer/reject")
+async def reject_transfer(data: dict):
+    """The user says it is a real expense/income: back to the Expense Queue."""
+    review_id = data.get("review_id")
+    if not review_id:
+        return {"status": "error", "data": None, "error": "review_id is required"}
+    return await asyncio.to_thread(transfers.reject_transfer, review_id)
 
 
 @router.post("/review-queue/dismiss")
@@ -3256,8 +3308,13 @@ def _emails_for_connected_account(emails, view, all_views):
 def _summarize_bank_emails(emails):
     # Login/security notices carry no amount; they are not transactions.
     emails = [e for e in emails if _safe_float(e.get("amount")) > 0]
-    credits = sum(_safe_float(e.get("amount")) for e in emails if e.get("transaction_type") == "credit")
-    debits = sum(_safe_float(e.get("amount")) for e in emails if e.get("transaction_type") != "credit")
+    # Money moved between the user's own accounts is neither income nor spend.
+    real = [e for e in emails if not categorizer.is_internal_transfer(e.get("category"))]
+    internal = [e for e in emails if categorizer.is_internal_transfer(e.get("category"))]
+    credits = sum(_safe_float(e.get("amount")) for e in real if e.get("transaction_type") == "credit")
+    debits = sum(_safe_float(e.get("amount")) for e in real if e.get("transaction_type") != "credit")
+    transfers_out = sum(_safe_float(e.get("amount")) for e in internal if e.get("transaction_type") != "credit")
+    transfers_in = sum(_safe_float(e.get("amount")) for e in internal if e.get("transaction_type") == "credit")
     latest_balance = None
     last_activity = None
     for email in sorted(emails, key=_alert_sort_key, reverse=True):
@@ -3272,6 +3329,8 @@ def _summarize_bank_emails(emails):
         "total_credits": round(credits, 2),
         "total_debits": round(debits, 2),
         "net_flow": round(credits - debits, 2),
+        "transfers_out": round(transfers_out, 2),
+        "transfers_in": round(transfers_in, 2),
         "last_activity": last_activity,
     }
 
