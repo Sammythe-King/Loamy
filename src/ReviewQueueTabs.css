@@ -396,60 +396,107 @@
   align-self: center;
 }
 
-/* Recently logged: flat and muted */
+/* Recently logged: readable rows in a card, paginated */
 .rqt-recent {
-  margin-top: 36px;
+  margin-top: 28px;
 }
 
 .rqt-recent-list {
   list-style: none;
-  margin: 12px 0 0;
+  margin: 14px 0 0;
   padding: 0;
-  border-top: 1px solid #eceeec;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  overflow: hidden;
 }
 
 .rqt-recent-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 4px;
-  border-bottom: 1px solid #eceeec;
-  color: #6b7280;
-  font-size: 14px;
+  gap: 16px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #eef0ee;
+  color: #1f2a1f;
+  font-size: 15px;
+}
+
+.rqt-recent-row:last-child {
+  border-bottom: none;
 }
 
 .rqt-recent-check {
   flex: none;
-  color: #81C784;
+  font-size: 18px;
+  color: #43A047;
+}
+
+.rqt-recent-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .rqt-recent-vendor {
-  flex: 1;
-  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 15px;
+  font-weight: 600;
+  color: #1f2a1f;
 }
 
 .rqt-recent-tag {
   flex: none;
-  padding: 2px 10px;
+  padding: 4px 12px;
   border-radius: 999px;
-  background: #f1f3f1;
-  font-size: 12px;
-  color: #4b5a4d;
+  background: #E8F5E9;
+  font-size: 13px;
+  font-weight: 500;
+  color: #1B5E20;
 }
 
 .rqt-recent-date {
-  flex: none;
   font-size: 13px;
+  color: #6b7280;
 }
 
 .rqt-recent-amount {
   flex: none;
-  min-width: 90px;
+  min-width: 110px;
   text-align: right;
+  font-size: 16px;
+  font-weight: 700;
+  color: #1f2a1f;
   font-variant-numeric: tabular-nums;
+}
+
+/* Pagination */
+.rqt-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.rqt-pager-info,
+.rqt-pager-page {
+  font-size: 14px;
+  color: #6b7280;
+}
+
+.rqt-pager-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.rqt-pager-btn {
+  padding: 8px 14px;
 }
 
 /* System activity: dense timeline */
@@ -518,32 +565,37 @@
 /* Empty states */
 .rqt-empty {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 40px 20px;
-  text-align: center;
+  gap: 14px;
+  padding: 14px 18px;
+  text-align: left;
   background: #ffffff;
   border: 1px dashed #d1d5db;
-  border-radius: 16px;
+  border-radius: 12px;
   color: #6b7280;
 }
 
+.rqt-empty-text {
+  flex: 1;
+  min-width: 220px;
+}
+
 .rqt-empty h3 {
-  margin: 0;
-  font-size: 16px;
+  margin: 0 0 2px;
+  font-size: 15px;
   color: #1f2a1f;
 }
 
 .rqt-empty p {
   margin: 0;
-  max-width: 420px;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.5;
 }
 
 .rqt-empty-icon {
-  font-size: 28px;
+  flex: none;
+  font-size: 22px;
   color: #66bb6a;
 }
 
@@ -554,9 +606,10 @@
 
   .rqt-recent-row {
     flex-wrap: wrap;
+    padding: 14px 16px;
   }
 
-  .rqt-recent-date {
-    display: none;
+  .rqt-recent-amount {
+    min-width: 0;
   }
 }

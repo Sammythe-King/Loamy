@@ -29,11 +29,16 @@ STANDARD_CATEGORIES = [
     "Transportation",
     "Utilities & Bills",
     "Entertainment & Subscriptions",
+    "Software & Subscriptions",
+    "Business Tools",
     "Shopping",
     "Transfers & Cash",
     "Uncategorized",
 ]
 UNCATEGORIZED = "Uncategorized"
+SOFTWARE = "Software & Subscriptions"
+BUSINESS_TOOLS = "Business Tools"
+TECH_CATEGORIES = {SOFTWARE, BUSINESS_TOOLS}
 MIN_CONFIDENCE = 0.7
 BATCH_SIZE = 25
 
@@ -107,8 +112,52 @@ _AMBIGUOUS_TRANSFER_RE = re.compile(
 )
 
 
+# Taxonomy guardrail: software and digital-tool vendors can only ever be filed
+# under TECH_CATEGORIES. Gemini has tagged things like "Google Deepsearch AI" as
+# Dining & Food, so this list decides, not the model. Cloud/work tooling goes to
+# "Business Tools"; consumer AI apps and other software go to "Software & Subscriptions".
+_BUSINESS_TOOL_VENDORS = [
+    "aws", "amazon web services", "azure", "google cloud", "gcp", "cloudflare", "vercel",
+    "netlify", "heroku", "digitalocean", "github", "gitlab", "bitbucket", "atlassian", "jira",
+    "slack", "zoom", "notion", "figma", "canva", "adobe", "godaddy", "namecheap", "hostinger",
+    "mailchimp", "hubspot", "quickbooks", "zoho", "twilio", "sendgrid", "supabase", "neon",
+    "mongodb", "workspace",
+]
+_SOFTWARE_VENDORS = [
+    "google", "gemini", "deepsearch", "deep search", "deepmind", "openai", "chatgpt",
+    "anthropic", "claude", "midjourney", "perplexity", "cursor", "copilot", "grok", "xai",
+    "microsoft", "msft", "dropbox", "icloud", "1password", "lastpass", "nordvpn",
+    "expressvpn", "proton", "linkedin", "apple.com/bill",
+]
+
+
+def _vendor_re(names: list) -> "re.Pattern":
+    return re.compile(r"(?<![a-z0-9])(" + "|".join(re.escape(n) for n in names) + r")(?![a-z0-9])")
+
+
+_BUSINESS_TOOL_RE = _vendor_re(_BUSINESS_TOOL_VENDORS)
+# "Google Play" / "Google Pay" are not software subscriptions, so only the
+# bare "google" token counts.
+_SOFTWARE_RE = re.compile(
+    r"(?<![a-z0-9])(" + "|".join(
+        re.escape(n) + (r"(?!\s*(?:play|pay))" if n == "google" else "") for n in _SOFTWARE_VENDORS
+    ) + r")(?![a-z0-9])"
+)
+
+
+def tech_category(text: str):
+    """The category a tech vendor must be filed under, or None if not a tech vendor."""
+    lowered = str(text or "").lower()
+    if _BUSINESS_TOOL_RE.search(lowered):
+        return BUSINESS_TOOLS
+    if _SOFTWARE_RE.search(lowered):
+        return SOFTWARE
+    return None
+
+
 def has_known_merchant(text: str) -> bool:
-    return bool(_MERCHANT_RE.search(str(text or "").lower()))
+    lowered = str(text or "").lower()
+    return bool(_MERCHANT_RE.search(lowered)) or tech_category(lowered) is not None
 
 
 def is_ambiguous_transfer(text: str) -> bool:
@@ -123,6 +172,11 @@ def apply_guardrails(item: dict, result: dict) -> dict:
       "Uncategorized", whatever Gemini guessed."""
     text = f"{item.get('vendor') or ''} {item.get('description') or ''}"
     category = result.get("category") or UNCATEGORIZED
+    forced = tech_category(text) if (item.get("type") or "debit") != "credit" else None
+    if forced:
+        if category in TECH_CATEGORIES:
+            return result
+        return {"category": forced, "confidence": max(float(result.get("confidence") or 0), 0.9)}
     if category == TRANSFERS:
         return {"category": UNCATEGORIZED, "confidence": result.get("confidence", 0.0)}
     if category != UNCATEGORIZED and is_ambiguous_transfer(text) and not has_known_merchant(text):
@@ -183,6 +237,11 @@ Guidance:
 - Uber, Bolt, fuel, bus, flights -> "Transportation".
 - Electricity, DSTV/GOtv, airtime, data, internet, rent -> "Utilities & Bills".
 - Netflix, Spotify, cinemas, betting, games -> "Entertainment & Subscriptions".
+- Software, AI tools, apps and digital services (Google, Gemini, OpenAI, ChatGPT, Claude,
+  Microsoft, Dropbox, VPNs) -> "Software & Subscriptions". Cloud, hosting and work tools
+  (AWS, Azure, Vercel, GitHub, Slack, Zoom, Notion, Adobe) -> "Business Tools".
+  A software or tech vendor must NEVER be filed as Dining & Food, Groceries, Shopping,
+  Transportation or Utilities & Bills, whatever the amount or wording looks like.
 - Retail, fashion, electronics, online stores -> "Shopping".
 - Person-to-person transfers, NIP/FIP/MB transfers ("FIP:MB:...", "TRANSFER TO ..."),
   POS transfers, inward credits and any alert that does NOT name an obvious consumer
@@ -247,6 +306,10 @@ def categorize_batch(items: list) -> list:
     results = [None] * len(items)
     pending = []
     for i, item in enumerate(items):
+        direct = apply_guardrails(item, {"category": UNCATEGORIZED, "confidence": 0.0})
+        if direct["category"] in TECH_CATEGORIES:
+            results[i] = direct
+            continue
         cached = _cache.get(_cache_key(item))
         if cached:
             results[i] = cached

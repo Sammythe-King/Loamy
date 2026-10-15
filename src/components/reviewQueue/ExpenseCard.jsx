@@ -8,6 +8,8 @@ export const EXPENSE_CATEGORIES = [
   "Transportation",
   "Utilities & Bills",
   "Entertainment & Subscriptions",
+  "Software & Subscriptions",
+  "Business Tools",
   "Shopping",
   "Bank Charges",
   "Personal Expenses",
