@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faChartPie, faComment, faFileInvoiceDollar,
-  faListCheck, faPaperPlane, faCheckCircle, faBuildingColumns
+  faListCheck, faCheckCircle, faBuildingColumns
 } from "@fortawesome/free-solid-svg-icons";
 import {
   fetchReviewQueue,
@@ -14,13 +14,18 @@ import {
   setTransferDestination,
   rejectTransfer,
 } from "./services/reviewQueueService";
+import ReviewTabs from "./components/reviewQueue/ReviewTabs";
+import ExpenseCard from "./components/reviewQueue/ExpenseCard";
+import TransferCard from "./components/reviewQueue/TransferCard";
+import ActivityList from "./components/reviewQueue/ActivityList";
 import "./InvoicesPage.css";
 import "./ReviewQueuePage.css";
+import "./ReviewQueueTabs.css";
 
 /*
- * ReviewQueuePage - full-page version of the Review Queue.
- * Single responsibility: render the sidebar + the queue of unrecognized
- * transactions as chat nudges. All API logic lives in reviewQueueService.
+ * ReviewQueuePage - full-page Review Queue with three tabs:
+ * Expenses, Internal Transfers and System Activity.
+ * All API logic lives in reviewQueueService.
  */
 const ReviewQueuePage = () => {
   // Use the REAL logged-in user, not a hardcoded "default". The ChatPage widget
@@ -39,14 +44,15 @@ const ReviewQueuePage = () => {
     }
   });
 
+  const [activeTab, setActiveTab] = useState("expenses");
   const [items, setItems] = useState([]);
   const [transfers, setTransfers] = useState([]);
   const [accounts, setAccounts] = useState([]);
+  const [activity, setActivity] = useState([]);
   const [destinations, setDestinations] = useState({});
   const [resolved, setResolved] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [replies, setReplies] = useState({});
   const [submittingId, setSubmittingId] = useState(null);
   const [resolvedNote, setResolvedNote] = useState(null);
 
@@ -64,6 +70,7 @@ const ReviewQueuePage = () => {
         setItems(res.data?.items || []);
         setTransfers(res.data?.transfers || []);
         setAccounts(res.data?.accounts || []);
+        setActivity(res.data?.activity || []);
         setResolved(res.data?.resolved || []);
       } else {
         setError(res.error || "Could not load the review queue.");
@@ -81,41 +88,29 @@ const ReviewQueuePage = () => {
     return () => clearInterval(interval);
   }, [loadQueue]);
 
-  const handleReplyChange = (id, value) => {
-    setReplies((prev) => ({ ...prev, [id]: value }));
+  const showNote = (note) => {
+    setResolvedNote(note);
+    setTimeout(() => setResolvedNote(null), 4000);
   };
 
-  const handleSubmit = async (id) => {
-    const text = (replies[id] || "").trim();
-    if (!text) return;
+  const handleResolve = async (id, category) => {
+    if (!category) return;
     setSubmittingId(id);
     setError(null);
     try {
-      const res = await resolveReviewItem(id, text);
+      const res = await resolveReviewItem(id, "", category);
       if (res.status === "success") {
-        setResolvedNote(res.data?.confirmation || "Logged.");
+        showNote(res.data?.confirmation || "Logged.");
         const logged = items.find((it) => it.id === id);
         if (logged) {
-          // Instantly show it in the "Recently logged" history for visual impact.
           setResolved((prev) => [
-            {
-              ...logged,
-              category: res.data?.category || "Other",
-              user_reply: text,
-              resolved_at: new Date().toISOString(),
-            },
+            { ...logged, category: res.data?.category || category, user_reply: "", resolved_at: new Date().toISOString() },
             ...prev,
           ]);
         }
         setItems((prev) => prev.filter((it) => it.id !== id));
-        setReplies((prev) => {
-          const next = { ...prev };
-          delete next[id];
-          return next;
-        });
-        setTimeout(() => setResolvedNote(null), 4000);
       } else {
-        setError(res.error || "Could not save your reply.");
+        setError(res.error || "Could not save your choice.");
       }
     } catch {
       setError("Network error. Please try again.");
@@ -144,8 +139,7 @@ const ReviewQueuePage = () => {
     try {
       const res = await action();
       if (res.status === "success") {
-        setResolvedNote(successNote);
-        setTimeout(() => setResolvedNote(null), 4000);
+        showNote(successNote);
         await loadQueue(false);
       } else {
         setError(res.error || "Could not update this transfer.");
@@ -162,6 +156,9 @@ const ReviewQueuePage = () => {
 
   const handleRejectTransfer = (id) =>
     runTransferAction(id, () => rejectTransfer(id), "Moved back to your expense queue.");
+
+  const handleUndo = (id) =>
+    runTransferAction(id, () => rejectTransfer(id), "Undone. It's back in your expense queue.");
 
   const handleDestination = (id) => {
     const destination = destinations[id];
@@ -180,9 +177,121 @@ const ReviewQueuePage = () => {
     });
   })();
 
+  // Confirmed transfers live in System Activity, not in "Recently Logged".
+  const recentExpenses = resolved.filter((it) => !/internal transfer/i.test(it.category || ""));
+
   const expenseCount = items.length;
   const transferCount = transferCards.length;
   const count = expenseCount + transferCount;
+
+  const renderExpenses = () => (
+    <>
+      <section aria-labelledby="rqt-needs-review">
+        <div className="rqt-section-head">
+          <h2 id="rqt-needs-review">Needs Review</h2>
+          {expenseCount > 0 && <span className="rqt-count">{expenseCount}</span>}
+        </div>
+        {expenseCount > 0 ? (
+          <div className="rqt-grid">
+            {items.map((item) => (
+              <ExpenseCard
+                key={item.id}
+                item={item}
+                busy={submittingId === item.id}
+                onResolve={handleResolve}
+                onDismiss={handleDismiss}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="rqt-empty">
+            <FontAwesomeIcon icon={faCheckCircle} className="rqt-empty-icon" />
+            <h3>You&apos;re all caught up!</h3>
+            <p>When Loamy can&apos;t categorize a bank transaction on its own, it will show up here.</p>
+            {recentExpenses.length === 0 && (
+              <button type="button" className="rq-demo-btn" onClick={handleSeedDemo}>
+                Try a sample nudge
+              </button>
+            )}
+          </div>
+        )}
+      </section>
+
+      {recentExpenses.length > 0 && (
+        <section className="rqt-recent" aria-labelledby="rqt-recent-title">
+          <div className="rqt-section-head">
+            <h2 id="rqt-recent-title">Recently Logged</h2>
+            <span className="rqt-count is-muted">{recentExpenses.length}</span>
+          </div>
+          <ul className="rqt-recent-list">
+            {recentExpenses.map((item) => (
+              <li key={item.id} className="rqt-recent-row">
+                <FontAwesomeIcon icon={faCheckCircle} className="rqt-recent-check" />
+                <span className="rqt-recent-vendor" title={item.vendor}>{item.vendor || "Transaction"}</span>
+                {item.category && <span className="rqt-recent-tag">{item.category}</span>}
+                <span className="rqt-recent-date">{item.date}</span>
+                <span className="rqt-recent-amount">&#8358;{Number(item.amount).toLocaleString()}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </>
+  );
+
+  const renderTransfers = () => (
+    <section aria-labelledby="rqt-transfers-title">
+      <div className="rqt-section-head">
+        <h2 id="rqt-transfers-title">Needs Confirmation</h2>
+        {transferCount > 0 && <span className="rqt-count">{transferCount}</span>}
+      </div>
+      <p className="rqt-section-sub">
+        Money you move between your own accounts isn&apos;t spending or income, so it stays out of your totals once confirmed.
+      </p>
+      {transferCount > 0 ? (
+        <div className="rqt-grid">
+          {transferCards.map((t) => (
+            <TransferCard
+              key={t.id}
+              transfer={t}
+              accounts={accounts}
+              destination={destinations[t.id]}
+              busy={submittingId === t.id}
+              onDestinationChange={(id, value) => setDestinations((prev) => ({ ...prev, [id]: value }))}
+              onConfirm={handleConfirmTransfer}
+              onLink={handleDestination}
+              onReject={handleRejectTransfer}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="rqt-empty">
+          <FontAwesomeIcon icon={faCheckCircle} className="rqt-empty-icon" />
+          <h3>No transfers to confirm</h3>
+          <p>Loamy links obvious transfers between your accounts automatically. Anything unclear lands here.</p>
+        </div>
+      )}
+    </section>
+  );
+
+  const renderActivity = () => (
+    <section aria-labelledby="rqt-activity-title">
+      <div className="rqt-section-head">
+        <h2 id="rqt-activity-title">System Activity</h2>
+      </div>
+      <p className="rqt-section-sub">Transfers Loamy linked automatically or you confirmed. Undo sends one back to your queue.</p>
+      {activity.length > 0 ? (
+        <ActivityList entries={activity} busyId={submittingId} onUndo={handleUndo} />
+      ) : (
+        <div className="rqt-empty">
+          <h3>Nothing automated yet</h3>
+          <p>When Loamy links a transfer between your accounts, you&apos;ll see it here.</p>
+        </div>
+      )}
+    </section>
+  );
+
+  const panels = { expenses: renderExpenses, transfers: renderTransfers, activity: renderActivity };
 
   return (
     <div className="invoices-page">
@@ -230,7 +339,7 @@ const ReviewQueuePage = () => {
         </header>
 
         {resolvedNote && (
-          <div className="rq-resolved-note">
+          <div className="rq-resolved-note" role="status">
             <FontAwesomeIcon icon={faCheckCircle} /> {resolvedNote}
           </div>
         )}
@@ -248,214 +357,22 @@ const ReviewQueuePage = () => {
 
         {error && !loading && <div className="rq-state rq-error">{error}</div>}
 
-        {!loading && !error && count === 0 && resolved.length === 0 && (
-          <div className="rq-empty">
-            <FontAwesomeIcon icon={faCheckCircle} className="rq-empty-icon" />
-            <h3>You&apos;re all caught up!</h3>
-            <p>
-              When Loamy catches an unrecognized bank transaction, it&apos;ll ask
-              you about it here so you can tell it what the payment was for.
-            </p>
-            <button type="button" className="rq-demo-btn" onClick={handleSeedDemo}>
-              Try a sample nudge
-            </button>
-          </div>
-        )}
-
-        {!loading && !error && count === 0 && resolved.length > 0 && (
-          <div className="rq-caughtup-banner">
-            <FontAwesomeIcon icon={faCheckCircle} />
-            <span>You&apos;re all caught up! Nothing left to review right now.</span>
-          </div>
-        )}
-
-        {!loading && !error && (count > 0 || resolved.length > 0) && (
-        <div className={`rq-layout ${resolved.length > 0 ? "has-aside" : ""}`}>
-        <div className="rq-primary">
-        {transferCount > 0 && (
-          <section className="rq-transfers" aria-label="Possible transfers between your accounts">
-            <div className="rq-section-head">
-              <h2>Transfers between your accounts</h2>
-              <span className="rq-history-count">{transferCount}</span>
+        {!loading && !error && (
+          <div className="rqt-shell">
+            <ReviewTabs
+              active={activeTab}
+              onChange={setActiveTab}
+              pending={{ expenses: expenseCount, transfers: transferCount }}
+            />
+            <div
+              className="rqt-panel"
+              role="tabpanel"
+              id={`rqt-panel-${activeTab}`}
+              aria-labelledby={`rqt-tab-${activeTab}`}
+            >
+              {panels[activeTab]()}
             </div>
-            <p className="rq-section-sub">
-              Money you move between your own accounts isn&apos;t spending or income, so it stays out of your totals once confirmed.
-            </p>
-            <div className="rq-list">
-              {transferCards.map((t) => {
-                const busy = submittingId === t.id;
-                const isPair = t.transfer_stage === "candidate";
-                return (
-                  <div key={t.id} className="rq-card rq-transfer-card">
-                    <div className="rq-bubble">
-                      <div className="rq-avatar">L</div>
-                      <p>{t.nudge}</p>
-                    </div>
-                    <div className="rq-meta">
-                      <span className="rq-amount">&#8358;{Number(t.amount).toLocaleString()}</span>
-                      {t.date && <span className="rq-date">{t.date}</span>}
-                      {isPair && t.counterpart_bank && (
-                        <span className="rq-transfer-route">{t.bank_name} &rarr; {t.counterpart_bank}</span>
-                      )}
-                    </div>
-                    {isPair ? (
-                      <div className="rq-transfer-actions">
-                        <button
-                          type="button"
-                          className="rq-transfer-primary"
-                          onClick={() => handleConfirmTransfer(t.id)}
-                          disabled={busy}
-                        >
-                          Yes, it&apos;s my own transfer
-                        </button>
-                        <button
-                          type="button"
-                          className="rq-transfer-secondary"
-                          onClick={() => handleRejectTransfer(t.id)}
-                          disabled={busy}
-                        >
-                          Not a transfer
-                        </button>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="rq-reply-row">
-                          <select
-                            value={destinations[t.id] || ""}
-                            onChange={(e) => setDestinations((prev) => ({ ...prev, [t.id]: e.target.value }))}
-                            disabled={busy}
-                            aria-label={t.transaction_type === "credit" ? "Source account" : "Destination account"}
-                          >
-                            <option value="">
-                              {t.transaction_type === "credit" ? "Came from which account?" : "Went to which account?"}
-                            </option>
-                            {accounts.map((a) => (
-                              <option key={a.id} value={a.name}>{a.name}</option>
-                            ))}
-                            <option value="Another account of mine">Another account of mine</option>
-                          </select>
-                          <button
-                            type="button"
-                            className="rq-send"
-                            onClick={() => handleDestination(t.id)}
-                            disabled={busy || !destinations[t.id]}
-                            aria-label="Confirm account"
-                          >
-                            {busy ? <span className="rq-spinner" /> : <FontAwesomeIcon icon={faCheckCircle} />}
-                          </button>
-                        </div>
-                        <button
-                          type="button"
-                          className="rq-dismiss"
-                          onClick={() => handleRejectTransfer(t.id)}
-                          disabled={busy}
-                        >
-                          Not a transfer
-                        </button>
-                      </>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        )}
-        {expenseCount > 0 && (
-          <div className="rq-list">
-            {items.map((item) => (
-              <div key={item.id} className="rq-card">
-                <div className="rq-bubble">
-                  <div className="rq-avatar">L</div>
-                  <p>{item.nudge}</p>
-                </div>
-                <div className="rq-meta">
-                  <span className="rq-amount">
-                    &#8358;{Number(item.amount).toLocaleString()}
-                  </span>
-                  {item.date && <span className="rq-date">{item.date}</span>}
-                </div>
-                <div className="rq-reply-row">
-                  <input
-                    type="text"
-                    placeholder="e.g. Sugar for stock"
-                    value={replies[item.id] || ""}
-                    onChange={(e) => handleReplyChange(item.id, e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleSubmit(item.id)}
-                    disabled={submittingId === item.id}
-                  />
-                  <button
-                    type="button"
-                    className="rq-send"
-                    onClick={() => handleSubmit(item.id)}
-                    disabled={submittingId === item.id || !(replies[item.id] || "").trim()}
-                    aria-label="Send reply"
-                  >
-                    {submittingId === item.id ? (
-                      <span className="rq-spinner" />
-                    ) : (
-                      <FontAwesomeIcon icon={faPaperPlane} />
-                    )}
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  className="rq-dismiss"
-                  onClick={() => handleDismiss(item.id)}
-                >
-                  Dismiss
-                </button>
-              </div>
-            ))}
           </div>
-        )}
-        </div>
-
-        {resolved.length > 0 && (
-          <aside className="rq-aside">
-          <section className="rq-history">
-            <div className="rq-history-head">
-              <h2>Recently logged</h2>
-              <span className="rq-history-count">{resolved.length}</span>
-            </div>
-            <p className="rq-history-sub">
-              Expenses you&apos;ve categorized from your review queue.
-            </p>
-            <ul className="rq-history-list">
-              {resolved.map((item) => (
-                <li key={item.id} className="rq-history-item">
-                  <div className="rq-history-check">
-                    <FontAwesomeIcon icon={faCheckCircle} />
-                  </div>
-                  <div className="rq-history-body">
-                    <div className="rq-history-row">
-                      <span className="rq-history-vendor">
-                        {item.vendor || "Transaction"}
-                      </span>
-                      <span className="rq-history-amount">
-                        &#8358;{Number(item.amount).toLocaleString()}
-                      </span>
-                    </div>
-                    <div className="rq-history-meta">
-                      {item.category && (
-                        <span className="rq-history-tag">{item.category}</span>
-                      )}
-                      {item.user_reply && (
-                        <span className="rq-history-note">
-                          &ldquo;{item.user_reply}&rdquo;
-                        </span>
-                      )}
-                      {item.date && (
-                        <span className="rq-history-date">{item.date}</span>
-                      )}
-                    </div>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
-          </aside>
-        )}
-        </div>
         )}
       </main>
     </div>
