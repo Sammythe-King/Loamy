@@ -655,10 +655,17 @@ def compute_bank_snapshot(user_id: str) -> dict:
                     bank_balances[bank] = {'balance': balance, 'date': date, 'internal_ms': internal_ms}
 
             if amount > 0:
+                is_transfer = categorizer.is_internal_transfer(category)
                 alerts.append({
                     'date': date, 'internal_ms': internal_ms, 'bank': bank,
                     'amount': amount, 'type': tx_type, 'narration': narration,
+                    'internal_transfer': is_transfer,
                 })
+                if is_transfer:
+                    # Own-account movement: zero net spending, never income.
+                    if tx_type != 'credit':
+                        snap['internal_transfers_total'] = snap.get('internal_transfers_total', 0.0) + amount
+                    continue
                 if tx_type == 'credit':
                     snap['total_credits'] += amount
                 else:
@@ -671,7 +678,11 @@ def compute_bank_snapshot(user_id: str) -> dict:
         ledger_rows = load_ledger_transactions(user_id)
         for row in ledger_rows:
             amount = row['amount']
-            if row['type'] == 'credit':
+            is_transfer = categorizer.is_internal_transfer(row['category'])
+            if is_transfer:
+                if row['type'] != 'credit':
+                    snap['internal_transfers_total'] = snap.get('internal_transfers_total', 0.0) + amount
+            elif row['type'] == 'credit':
                 snap['total_credits'] += amount
             else:
                 snap['total_debits'] += amount
@@ -680,6 +691,7 @@ def compute_bank_snapshot(user_id: str) -> dict:
             alerts.append({
                 'date': row['date'], 'internal_ms': row['internal_date_ms'], 'bank': row['bank'],
                 'amount': amount, 'type': row['type'], 'narration': row['description'],
+                'internal_transfer': is_transfer,
             })
         snap['ledger_count'] = len(ledger_rows)
 
@@ -690,6 +702,7 @@ def compute_bank_snapshot(user_id: str) -> dict:
             snap['last_date'] = latest[1]['date']
         snap['total_credits'] = round(snap['total_credits'], 2)
         snap['total_debits'] = round(snap['total_debits'], 2)
+        snap['internal_transfers_total'] = round(snap.get('internal_transfers_total', 0.0), 2)
         snap['spending_by_category'] = {k: round(v, 2) for k, v in snap['spending_by_category'].items()}
 
         alerts.sort(key=lambda a: (a['internal_ms'], a['date']), reverse=True)
@@ -708,12 +721,14 @@ def format_snapshot_for_ai(snap: dict) -> str:
     ) or "  - No categorized spending yet."
     txns = "\n".join(
         f"  - {t['date']}: {t['bank']} {t['type'].upper()} ₦{t['amount']:,.2f} | {t['narration'][:40]}"
+        + (" | INTERNAL TRANSFER (not spending)" if t.get("internal_transfer") else "")
         for t in snap.get("recent_transactions", [])[:15]
     ) or "  - No transactions yet."
     bank_str = f" (latest alert from {snap['bank_name']} on {snap['last_date']})" if snap.get("bank_name") else ""
     return f"""- Current Bank Balance: ₦{snap.get('balance', 0):,.2f}{bank_str}
 - Total Money In: ₦{snap.get('total_credits', 0):,.2f}
 - Total Money Out (bank alerts + cash + receipts): ₦{snap.get('total_debits', 0):,.2f}
+- Moved between your own accounts (Internal Transfers, excluded from the totals above): ₦{snap.get('internal_transfers_total', 0):,.2f}
 - Bank alerts on file: {snap.get('alert_count', 0)}
 - Cash entries and receipts on file: {snap.get('ledger_count', 0)}
 

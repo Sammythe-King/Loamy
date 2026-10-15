@@ -176,6 +176,15 @@ def _scan_bank_emails_for_review(user_id="default", user_name="there", force=Fal
         except Exception:
             continue
 
+    # Match transfers between the user's own accounts first, so their legs are
+    # already in the queue (as transfer items) before the expense scan runs and
+    # are not also queued as ordinary uncategorized expenses.
+    try:
+        import transfers
+        transfers.reconcile_internal_transfers(user_id, emails, user_name)
+    except Exception as e:
+        print(f"[REVIEW] transfer reconcile failed: {e}")
+
     added = 0
     for email in emails:
         if not (email.get('is_bank_alert') is True or email.get('is_bank_alert') == 'true'):

@@ -62,6 +62,22 @@ _CANONICAL_BY_LOWER = {c.lower(): c for c in STANDARD_CATEGORIES}
 
 TRANSFERS = "Transfers & Cash"
 
+# Money moved between the user's OWN accounts. Never an expense and never income:
+# it carries a net spending effect of zero everywhere. It is deliberately NOT in
+# STANDARD_CATEGORIES, so the AI categorizer can't assign it; only the transfer
+# matcher (transfers.py) or the user (chat / Review Queue) can.
+INTERNAL_TRANSFER = "Internal Transfer"
+_INTERNAL_TRANSFER_ALIASES = {
+    "internal transfer", "internal transfers", "own account transfer",
+    "own account transfers", "transfer between accounts", "account transfer",
+}
+_COERCE_BY_LOWER = {**_CANONICAL_BY_LOWER, **{a: INTERNAL_TRANSFER for a in _INTERNAL_TRANSFER_ALIASES}}
+
+
+def is_internal_transfer(category) -> bool:
+    """True when a category label means 'money moved between my own accounts'."""
+    return str(category or "").strip().lower() in _INTERNAL_TRANSFER_ALIASES
+
 # Obvious consumer merchants. An alert naming one of these is safe to
 # auto-categorize; anything else that looks like a transfer is left for the user.
 KNOWN_MERCHANTS = [
@@ -135,8 +151,8 @@ def _get_model():
 def coerce_category(value) -> str:
     """Snap any label (legacy, lowercase, AI output) onto the standard list."""
     key = str(value or "").strip().lower()
-    if key in _CANONICAL_BY_LOWER:
-        return _CANONICAL_BY_LOWER[key]
+    if key in _COERCE_BY_LOWER:
+        return _COERCE_BY_LOWER[key]
     return _LEGACY_ALIASES.get(key, UNCATEGORIZED)
 
 
@@ -172,6 +188,9 @@ Guidance:
   POS transfers, inward credits and any alert that does NOT name an obvious consumer
   merchant -> "Uncategorized". The user will label these themselves.
 - Never guess a category from a person's name.
+- Moving money between the user's own accounts is NOT spending. You cannot tell which
+  accounts belong to the user, so never label a transfer as an expense category: answer
+  "Uncategorized" and the app will match it to the user's other accounts itself.
 - If you genuinely cannot tell, use "Uncategorized" with low confidence.
 
 Give a confidence between 0 and 1 for each item.
