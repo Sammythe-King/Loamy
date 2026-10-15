@@ -4,7 +4,6 @@
   min-width: 0;
   width: calc(100% - 240px);
   box-sizing: border-box;
-  background: #f9fafb;
 }
 
 @media (max-width: 1024px) {
@@ -41,9 +40,9 @@
   margin-bottom: 24px;
   max-width: 100%;
   background: #ffffff;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #e2e8e3;
   border-radius: 12px;
-  box-shadow: 0 1px 2px rgba(17, 24, 39, 0.05);
+  box-shadow: 0 1px 2px rgba(23, 50, 77, 0.07);
 }
 
 /* Sliding pill: sized to one column, moved by the active index */
@@ -54,10 +53,10 @@
   left: var(--rqt-tab-pad);
   width: calc((100% - var(--rqt-tab-pad) * 2) / var(--rqt-tab-count));
   transform: translateX(calc(var(--rqt-tab-index) * 100%));
-  background: #ecfdf5;
-  border: 1px solid #d1fae5;
+  background: #eef5ef;
+  border: 1px solid #cfe3d2;
   border-radius: 9px;
-  box-shadow: 0 1px 2px rgba(17, 24, 39, 0.06);
+  box-shadow: 0 1px 2px rgba(23, 50, 77, 0.07);
   transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
   pointer-events: none;
 }
@@ -73,7 +72,7 @@
   border: none;
   border-radius: 9px;
   background: transparent;
-  color: #6b7280;
+  color: #718096;
   font: inherit;
   font-size: 14px;
   font-weight: 500;
@@ -83,16 +82,16 @@
 }
 
 .rqt-tab:hover {
-  color: #111827;
+  color: #17324d;
 }
 
 .rqt-tab:focus-visible {
-  outline: 2px solid #2E7D32;
+  outline: 2px solid #177a35;
   outline-offset: 2px;
 }
 
 .rqt-tab.is-active {
-  color: #047857;
+  color: #177a35;
   font-weight: 600;
 }
 
@@ -100,7 +99,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #ef4444;
+  background: #e5394f;
   flex: none;
 }
 
@@ -121,12 +120,12 @@
 .rqt-section-head h2 {
   margin: 0;
   font-size: 18px;
-  color: #1f2a1f;
+  color: #17324d;
 }
 
 .rqt-section-sub {
   margin: 0 0 16px;
-  color: #6b7280;
+  color: #718096;
   font-size: 14px;
   line-height: 1.5;
 }
@@ -138,15 +137,15 @@
 .rqt-count {
   padding: 2px 10px;
   border-radius: 999px;
-  background: #E8F5E9;
-  color: #2E7D32;
+  background: #eef5ef;
+  color: #177a35;
   font-size: 12px;
   font-weight: 600;
 }
 
 .rqt-count.is-muted {
-  background: #f1f3f1;
-  color: #6b7280;
+  background: #edf1ee;
+  color: #718096;
 }
 
 /* Card grid (fills the full page width) */
@@ -163,9 +162,9 @@
   min-width: 0;
   padding: 20px;
   background: #ffffff;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #e2e8e3;
   border-radius: 16px;
-  box-shadow: 0 1px 2px rgba(17, 24, 39, 0.05);
+  box-shadow: 0 1px 2px rgba(23, 50, 77, 0.07);
 }
 
 .rqt-card-head {
@@ -186,7 +185,7 @@
   margin: 0;
   font-size: 15px;
   font-weight: 600;
-  color: #1f2a1f;
+  color: #17324d;
   overflow-wrap: anywhere;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -196,18 +195,18 @@
 
 .rqt-card-date {
   font-size: 13px;
-  color: #6b7280;
+  color: #718096;
 }
 
 .rqt-amount {
   flex: none;
   font-size: 18px;
   font-weight: 700;
-  color: #1f2a1f;
+  color: #17324d;
 }
 
 .rqt-amount.is-credit {
-  color: #2E7D32;
+  color: #177a35;
 }
 
 /* AI suggestion row */
@@ -217,8 +216,8 @@
   justify-content: space-between;
   gap: 10px;
   padding: 10px 12px;
-  background: #F1F8F2;
-  border: 1px solid #C8E6C9;
+  background: #edf7ee;
+  border: 1px solid #cfe3d2;
   border-radius: 12px;
 }
 
@@ -228,11 +227,11 @@
   gap: 8px;
   min-width: 0;
   font-size: 13px;
-  color: #2E7D32;
+  color: #177a35;
 }
 
 .rqt-suggest-label strong {
-  color: #1B5E20;
+  color: #0f5f27;
   overflow-wrap: anywhere;
 }
 
@@ -255,8 +254,8 @@
 .rqt-approve,
 .rqt-primary {
   padding: 9px 16px;
-  border: 1px solid #2E7D32;
-  background: #2E7D32;
+  border: 1px solid #177a35;
+  background: #177a35;
   color: #ffffff;
   font-weight: 600;
 }
@@ -269,21 +268,21 @@
 
 .rqt-approve:hover:not(:disabled),
 .rqt-primary:hover:not(:disabled) {
-  background: #1B5E20;
-  border-color: #1B5E20;
+  background: #0f5f27;
+  border-color: #0f5f27;
 }
 
 .rqt-secondary {
   padding: 9px 16px;
-  border: 1px solid #d1d5db;
+  border: 1px solid #d5e0d7;
   background: #ffffff;
-  color: #1f2a1f;
+  color: #17324d;
   font-weight: 500;
 }
 
 .rqt-secondary:hover:not(:disabled) {
-  border-color: #2E7D32;
-  color: #2E7D32;
+  border-color: #177a35;
+  color: #177a35;
 }
 
 .rqt-ghost {
@@ -291,12 +290,12 @@
   padding: 6px 10px;
   border: 1px solid transparent;
   background: transparent;
-  color: #6b7280;
+  color: #718096;
 }
 
 .rqt-ghost:hover:not(:disabled) {
-  background: #f3f4f6;
-  color: #1f2a1f;
+  background: #edf1ee;
+  color: #17324d;
 }
 
 .rqt-approve:disabled,
@@ -313,7 +312,7 @@
 .rqt-ghost:focus-visible,
 .rqt-select-row select:focus-visible,
 .rqt-bank-select:focus-visible {
-  outline: 2px solid #2E7D32;
+  outline: 2px solid #177a35;
   outline-offset: 2px;
 }
 
@@ -327,18 +326,18 @@
   flex: 1;
   min-width: 0;
   padding: 10px 12px;
-  border: 1px solid #d1d5db;
+  border: 1px solid #d5e0d7;
   border-radius: 10px;
   background: #ffffff;
   font: inherit;
   font-size: 14px;
-  color: #1f2a1f;
+  color: #17324d;
 }
 
 /* Transfer cards: account to account, visually distinct from expense cards */
 .rqt-transfer {
-  background: #F7FAF7;
-  border: 1px dashed #A5D6A7;
+  background: #f7faf7;
+  border: 1px dashed #b9cbbd;
 }
 
 .rqt-transfer-flow {
@@ -364,15 +363,15 @@
   width: 40px;
   height: 40px;
   border-radius: 50%;
-  background: #E8F5E9;
-  color: #2E7D32;
+  background: #eef5ef;
+  color: #177a35;
 }
 
 .rqt-bank-name {
   max-width: 100%;
   font-size: 13px;
   font-weight: 600;
-  color: #1f2a1f;
+  color: #17324d;
   overflow-wrap: anywhere;
 }
 
@@ -393,7 +392,7 @@
 .rqt-transfer-amount {
   font-size: 18px;
   font-weight: 700;
-  color: #1B5E20;
+  color: #0f5f27;
 }
 
 .rqt-transfer-arrow {
@@ -403,8 +402,8 @@
   height: 28px;
   border-radius: 50%;
   background: #ffffff;
-  border: 1px solid #C8E6C9;
-  color: #2E7D32;
+  border: 1px solid #cfe3d2;
+  color: #177a35;
   font-size: 12px;
 }
 
@@ -433,9 +432,9 @@
   margin: 14px 0 0;
   padding: 0;
   background: #ffffff;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #e2e8e3;
   border-radius: 14px;
-  box-shadow: 0 1px 2px rgba(17, 24, 39, 0.05);
+  box-shadow: 0 1px 2px rgba(23, 50, 77, 0.07);
   overflow: hidden;
 }
 
@@ -444,14 +443,14 @@
   align-items: center;
   gap: 16px;
   padding: 14px 20px;
-  border-bottom: 1px solid #f3f4f6;
-  color: #111827;
+  border-bottom: 1px solid #edf1ee;
+  color: #17324d;
   font-size: 15px;
   transition: background 0.15s;
 }
 
 .rqt-recent-row:hover {
-  background: #f9fafb;
+  background: #f5f9f5;
 }
 
 .rqt-recent-row:last-child {
@@ -465,8 +464,8 @@
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background: #f3f4f6;
-  color: #6b7280;
+  background: #edf1ee;
+  color: #718096;
   font-size: 14px;
   font-weight: 600;
   line-height: 1;
@@ -486,22 +485,22 @@
   white-space: nowrap;
   font-size: 15px;
   font-weight: 500;
-  color: #111827;
+  color: #17324d;
 }
 
 .rqt-recent-tag {
   flex: none;
   padding: 4px 8px;
   border-radius: 6px;
-  background: #f3f4f6;
+  background: #edf1ee;
   font-size: 12px;
   font-weight: 500;
-  color: #4b5563;
+  color: #4a5568;
 }
 
 .rqt-recent-date {
   font-size: 14px;
-  color: #9ca3af;
+  color: #a0aec0;
 }
 
 .rqt-recent-amount {
@@ -510,7 +509,7 @@
   text-align: right;
   font-size: 15px;
   font-weight: 600;
-  color: #111827;
+  color: #17324d;
   font-variant-numeric: tabular-nums;
 }
 
@@ -527,7 +526,7 @@
 .rqt-pager-info,
 .rqt-pager-page {
   font-size: 14px;
-  color: #6b7280;
+  color: #718096;
 }
 
 .rqt-pager-controls {
@@ -546,9 +545,9 @@
   margin: 0;
   padding: 0;
   background: #ffffff;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #e2e8e3;
   border-radius: 14px;
-  box-shadow: 0 1px 2px rgba(17, 24, 39, 0.05);
+  box-shadow: 0 1px 2px rgba(23, 50, 77, 0.07);
   overflow: hidden;
 }
 
@@ -557,7 +556,7 @@
   align-items: center;
   gap: 12px;
   padding: 10px 16px;
-  border-bottom: 1px solid #eef0ee;
+  border-bottom: 1px solid #edf1ee;
 }
 
 .rqt-log-row:last-child {
@@ -571,14 +570,14 @@
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  background: #f1f3f1;
-  color: #6b7280;
+  background: #edf1ee;
+  color: #718096;
   font-size: 11px;
 }
 
 .rqt-log-icon.is-ai {
-  background: #E8F5E9;
-  color: #2E7D32;
+  background: #eef5ef;
+  color: #177a35;
 }
 
 .rqt-log-body {
@@ -590,13 +589,13 @@
   margin: 0;
   font-size: 14px;
   line-height: 1.4;
-  color: #1f2a1f;
+  color: #17324d;
   overflow-wrap: anywhere;
 }
 
 .rqt-log-time {
   font-size: 12px;
-  color: #9ca3af;
+  color: #a0aec0;
 }
 
 .rqt-undo {
@@ -615,11 +614,11 @@
   margin: 0 auto;
   padding: 28px 24px;
   text-align: center;
-  background: #ecfdf5;
-  border: 1px solid #d1fae5;
+  background: #ffffff;
+  border: 1px dashed #b9cbbd;
   border-radius: 16px;
   box-shadow: none;
-  color: #047857;
+  color: #718096;
 }
 
 .rqt-empty-text {
@@ -630,20 +629,20 @@
   margin: 0 0 4px;
   font-size: 16px;
   font-weight: 600;
-  color: #064e3b;
+  color: #17324d;
 }
 
 .rqt-empty p {
   margin: 0;
   font-size: 14px;
   line-height: 1.5;
-  color: #047857;
+  color: #718096;
 }
 
 .rqt-empty-icon {
   flex: none;
   font-size: 36px;
-  color: #10b981;
+  color: #177a35;
 }
 
 @media (max-width: 560px) {
