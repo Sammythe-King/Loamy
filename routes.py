@@ -1454,6 +1454,30 @@ async def force_reparse_stored_email_data(user_id: str):
         return {"status": "error", "data": None, "error": str(e)}
 
 
+_SUGGESTION_CACHE: dict = {}
+
+
+def _attach_category_suggestions(items: list) -> None:
+    """Give each pending expense an AI-suggested category (cached per item so the
+    30s poll never re-asks the model)."""
+    todo = [it for it in items if it["id"] not in _SUGGESTION_CACHE]
+    if todo:
+        try:
+            results = categorizer.categorize_batch([
+                {"amount": it.get("amount"), "vendor": it.get("vendor"),
+                 "description": it.get("nudge", ""), "type": it.get("transaction_type") or "debit"}
+                for it in todo
+            ])
+            for it, res in zip(todo, results):
+                _SUGGESTION_CACHE[it["id"]] = (res or {}).get("category", categorizer.UNCATEGORIZED)
+        except Exception as e:
+            print(f"[REVIEW] suggestion error: {e}")
+            return
+    for it in items:
+        suggestion = _SUGGESTION_CACHE.get(it["id"], "")
+        it["suggested_category"] = "" if suggestion == categorizer.UNCATEGORIZED else suggestion
+
+
 @router.get("/review-queue/{user_id}")
 async def get_review_queue(user_id: str):
     """Return all pending review items for a user (newest first).
@@ -1470,10 +1494,14 @@ async def get_review_queue(user_id: str):
         items = []
         transfers = []
         resolved = []
+        linked_groups = {}
         for i in range(len(results["ids"])):
             meta = results["metadatas"][i]
             status = meta.get("status")
             is_transfer = meta.get("item_kind") == "transfer"
+            if is_transfer and status == "resolved" and meta.get("transfer_stage") == "linked":
+                group_key = meta.get("pair_id") or results["ids"][i]
+                linked_groups.setdefault(group_key, []).append({"id": results["ids"][i], **meta})
             if status == "pending":
                 (transfers if is_transfer else items).append({"id": results["ids"][i], **meta})
             elif status == "resolved" and not (is_transfer and meta.get("transfer_stage") == "linked"
@@ -1484,6 +1512,28 @@ async def get_review_queue(user_id: str):
         # Newest logged first; cap the history so the page stays light.
         resolved.sort(key=lambda x: x.get("resolved_at", ""), reverse=True)
         resolved = resolved[:20]
+
+        await asyncio.to_thread(_attach_category_suggestions, items)
+
+        activity = []
+        for legs in linked_groups.values():
+            leg = next((l for l in legs if l.get("transaction_type") == "debit"), legs[0])
+            other = leg.get("destination_account") or leg.get("counterpart_bank") or "another account"
+            if leg.get("transaction_type") == "debit":
+                from_bank, to_bank = leg.get("bank_name") or "Unknown", other
+            else:
+                from_bank, to_bank = other, leg.get("bank_name") or "Unknown"
+            activity.append({
+                "id": leg["id"],
+                "amount": leg.get("amount"),
+                "date": leg.get("date"),
+                "from_bank": from_bank,
+                "to_bank": to_bank,
+                "auto": leg.get("user_reply") == "Auto-matched internal transfer",
+                "resolved_at": leg.get("resolved_at", ""),
+            })
+        activity.sort(key=lambda x: x.get("resolved_at", ""), reverse=True)
+        activity = activity[:30]
 
         accounts = []
         try:
@@ -1499,7 +1549,7 @@ async def get_review_queue(user_id: str):
             "status": "success",
             "data": {"items": items, "count": len(items),
                      "transfers": transfers, "transfer_count": len(transfers), "accounts": accounts,
-                     "resolved": resolved, "resolved_count": len(resolved)},
+                     "resolved": resolved, "resolved_count": len(resolved), "activity": activity},
             "error": None,
         }
     except Exception as e:
@@ -1522,6 +1572,9 @@ async def resolve_review_item(data: dict):
 
         review_id = data.get("review_id")
         reply = (data.get("reply") or "").strip()
+        explicit_category = (data.get("category") or "").strip()
+        if explicit_category and not reply:
+            reply = explicit_category
         if not review_id or not reply:
             return {"status": "error", "data": None, "error": "review_id and reply are required"}
 
@@ -1533,9 +1586,10 @@ async def resolve_review_item(data: dict):
         vendor = meta.get("vendor", "")
 
         # Use Gemini ONLY to detect the category from the free-text reply (intent extraction).
-        category = "Other"
+        category = explicit_category or "Other"
         try:
-            classify_prompt = f"""You are categorizing an expense based on a short user note.
+            if not explicit_category:
+                classify_prompt = f"""You are categorizing an expense based on a short user note.
 Vendor: {vendor}
 User's note: "{reply}"
 
@@ -1545,21 +1599,21 @@ Stock, Groceries, Ingredients, Transport, Bills, Salaries, Equipment, Rent, Mark
 If the note describes a personal (non-business) purchase, choose "Personal Expenses".
 
 Reply with ONLY the category name, nothing else."""
-            ai_resp = model.generate_content(classify_prompt)
-            candidate = (ai_resp.text or "").strip().split("\n")[0].strip()
-            # Longer names first so "Personal Expenses" matches before "Personal".
-            valid = ["Personal Expenses", "Electronics", "Hardware", "Stock", "Groceries",
-                     "Ingredients", "Transport", "Bills", "Salaries", "Equipment", "Rent",
-                     "Marketing", "Food", "Shopping", "Other"]
-            candidate_lower = candidate.lower()
-            for v in valid:
-                if v.lower() in candidate_lower:
-                    category = v
-                    break
-            # Safety net: if the user literally wrote "personal", honor it even if
-            # the model picked something else.
-            if "personal" in reply.lower():
-                category = "Personal Expenses"
+                ai_resp = model.generate_content(classify_prompt)
+                candidate = (ai_resp.text or "").strip().split("\n")[0].strip()
+                # Longer names first so "Personal Expenses" matches before "Personal".
+                valid = ["Personal Expenses", "Electronics", "Hardware", "Stock", "Groceries",
+                         "Ingredients", "Transport", "Bills", "Salaries", "Equipment", "Rent",
+                         "Marketing", "Food", "Shopping", "Other"]
+                candidate_lower = candidate.lower()
+                for v in valid:
+                    if v.lower() in candidate_lower:
+                        category = v
+                        break
+                # Safety net: if the user literally wrote "personal", honor it even if
+                # the model picked something else.
+                if "personal" in reply.lower():
+                    category = "Personal Expenses"
         except Exception as e:
             print(f"[REVIEW] Category classify error: {e}")
 

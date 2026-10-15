@@ -25,11 +25,12 @@ export async function fetchReviewQueue(userId) {
 
 // Submit the user's free-text reply to a nudge. The backend extracts the
 // category, tags the transaction, and saves a vendor memory rule.
-export async function resolveReviewItem(reviewId, reply) {
+// Pass `category` to apply a category picked from the dropdown directly.
+export async function resolveReviewItem(reviewId, reply, category) {
   const res = await fetch(`${API_URL}/review-queue/resolve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ review_id: reviewId, reply }),
+    body: JSON.stringify({ review_id: reviewId, reply: reply || "", category: category || "" }),
   });
   return safeJson(res);
 }
