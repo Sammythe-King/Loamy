@@ -18,6 +18,7 @@ import ReviewTabs from "./components/reviewQueue/ReviewTabs";
 import ExpenseCard from "./components/reviewQueue/ExpenseCard";
 import TransferCard from "./components/reviewQueue/TransferCard";
 import ActivityList from "./components/reviewQueue/ActivityList";
+import Pagination, { paginate } from "./components/reviewQueue/Pagination";
 import "./InvoicesPage.css";
 import "./ReviewQueuePage.css";
 import "./ReviewQueueTabs.css";
@@ -27,6 +28,9 @@ import "./ReviewQueueTabs.css";
  * Expenses, Internal Transfers and System Activity.
  * All API logic lives in reviewQueueService.
  */
+const RECENT_PAGE_SIZE = 8;
+const ACTIVITY_PAGE_SIZE = 10;
+
 const ReviewQueuePage = () => {
   // Use the REAL logged-in user, not a hardcoded "default". The ChatPage widget
   // and dashboard key everything to the session user_id (e.g. user_377bad...),
@@ -55,6 +59,8 @@ const ReviewQueuePage = () => {
   const [error, setError] = useState(null);
   const [submittingId, setSubmittingId] = useState(null);
   const [resolvedNote, setResolvedNote] = useState(null);
+  const [recentPage, setRecentPage] = useState(1);
+  const [activityPage, setActivityPage] = useState(1);
 
   // isInitial=true shows the full-page "Loading..." state (first mount only).
   // The 30s poll below reuses this same function to pick up new nudges, but
@@ -180,6 +186,9 @@ const ReviewQueuePage = () => {
   // Confirmed transfers live in System Activity, not in "Recently Logged".
   const recentExpenses = resolved.filter((it) => !/internal transfer/i.test(it.category || ""));
 
+  const recentPaged = paginate(recentExpenses, recentPage, RECENT_PAGE_SIZE);
+  const activityPaged = paginate(activity, activityPage, ACTIVITY_PAGE_SIZE);
+
   const expenseCount = items.length;
   const transferCount = transferCards.length;
   const count = expenseCount + transferCount;
@@ -206,8 +215,10 @@ const ReviewQueuePage = () => {
         ) : (
           <div className="rqt-empty">
             <FontAwesomeIcon icon={faCheckCircle} className="rqt-empty-icon" />
-            <h3>You&apos;re all caught up!</h3>
-            <p>When Loamy can&apos;t categorize a bank transaction on its own, it will show up here.</p>
+            <div className="rqt-empty-text">
+              <h3>You&apos;re all caught up!</h3>
+              <p>When Loamy can&apos;t categorize a bank transaction on its own, it will show up here.</p>
+            </div>
             {recentExpenses.length === 0 && (
               <button type="button" className="rq-demo-btn" onClick={handleSeedDemo}>
                 Try a sample nudge
@@ -224,16 +235,19 @@ const ReviewQueuePage = () => {
             <span className="rqt-count is-muted">{recentExpenses.length}</span>
           </div>
           <ul className="rqt-recent-list">
-            {recentExpenses.map((item) => (
+            {recentPaged.pageItems.map((item) => (
               <li key={item.id} className="rqt-recent-row">
                 <FontAwesomeIcon icon={faCheckCircle} className="rqt-recent-check" />
-                <span className="rqt-recent-vendor" title={item.vendor}>{item.vendor || "Transaction"}</span>
+                <div className="rqt-recent-main">
+                  <span className="rqt-recent-vendor" title={item.vendor}>{item.vendor || "Transaction"}</span>
+                  <span className="rqt-recent-date">{item.date}</span>
+                </div>
                 {item.category && <span className="rqt-recent-tag">{item.category}</span>}
-                <span className="rqt-recent-date">{item.date}</span>
                 <span className="rqt-recent-amount">&#8358;{Number(item.amount).toLocaleString()}</span>
               </li>
             ))}
           </ul>
+          <Pagination {...recentPaged} onChange={setRecentPage} label="Recently logged" />
         </section>
       )}
     </>
@@ -267,8 +281,10 @@ const ReviewQueuePage = () => {
       ) : (
         <div className="rqt-empty">
           <FontAwesomeIcon icon={faCheckCircle} className="rqt-empty-icon" />
-          <h3>No transfers to confirm</h3>
-          <p>Loamy links obvious transfers between your accounts automatically. Anything unclear lands here.</p>
+          <div className="rqt-empty-text">
+            <h3>No transfers to confirm</h3>
+            <p>Loamy links obvious transfers between your accounts automatically. Anything unclear lands here.</p>
+          </div>
         </div>
       )}
     </section>
@@ -281,11 +297,16 @@ const ReviewQueuePage = () => {
       </div>
       <p className="rqt-section-sub">Transfers Loamy linked automatically or you confirmed. Undo sends one back to your queue.</p>
       {activity.length > 0 ? (
-        <ActivityList entries={activity} busyId={submittingId} onUndo={handleUndo} />
+        <>
+          <ActivityList entries={activityPaged.pageItems} busyId={submittingId} onUndo={handleUndo} />
+          <Pagination {...activityPaged} onChange={setActivityPage} label="System activity" />
+        </>
       ) : (
         <div className="rqt-empty">
-          <h3>Nothing automated yet</h3>
-          <p>When Loamy links a transfer between your accounts, you&apos;ll see it here.</p>
+          <div className="rqt-empty-text">
+            <h3>Nothing automated yet</h3>
+            <p>When Loamy links a transfer between your accounts, you&apos;ll see it here.</p>
+          </div>
         </div>
       )}
     </section>

@@ -2419,6 +2419,11 @@ def _ai_categorize_bank_alerts(emails: list) -> int:
             e["category"] = categorizer.UNCATEGORIZED
             e["category_source"] = "gemini"
             demoted += 1
+        elif guarded["category"] != categorizer.coerce_category(current):
+            # e.g. an earlier sync filed "Google Deepsearch AI" under Dining & Food
+            e["category"] = guarded["category"]
+            e["category_source"] = "gemini"
+            e["category_confidence"] = guarded["confidence"]
     if demoted:
         print(f"[categorizer] {demoted} ambiguous transfer(s) moved back to Uncategorized")
 
