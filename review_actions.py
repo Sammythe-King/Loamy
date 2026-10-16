@@ -108,8 +108,8 @@ def resolve_item(review_id: str, reply: str = "", category: str = "", history=No
         return _ok({
             "resolved": True, "category": categorizer.INTERNAL_TRANSFER, "vendor": vendor,
             "moved_to": "transfers",
-            "confirmation": ai_reply or "Got it. I've moved this to Internal Transfers. "
-                                        "Pick the account it went to or came from there.",
+            "confirmation": ai_reply or "Got it, that's a transfer between your own accounts. "
+                                        "Pick the other account on the card and it will be logged under Internal Transfers.",
         })
 
     meta.update({"status": "resolved", "user_reply": reply, "category": category,

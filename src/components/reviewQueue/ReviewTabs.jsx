@@ -1,7 +1,6 @@
 export const REVIEW_TABS = [
-  { id: "expenses", label: "Expenses" },
+  { id: "review", label: "Review Queue" },
   { id: "transfers", label: "Internal Transfers" },
-  { id: "activity", label: "System Activity" },
 ];
 
 const ReviewTabs = ({ active, onChange, pending }) => {

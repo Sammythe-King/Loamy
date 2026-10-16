@@ -10,7 +10,8 @@ accounts so it is never counted as spending (or income).
           "Internal Transfer" (resolved, never shown in the review queue).
   Tier 2  Anything less certain (only one side seen, ambiguous routing, a pair
           without matching references) is staged as a pending *transfer* item,
-          shown in the Internal Transfers queue for the user to confirm.
+          shown in the Review Queue for the user to confirm. Only linked or
+          confirmed transfers appear in the Internal Transfers tab.
 
 Items are stored in the review queue collection with item_kind="transfer" so
 every existing reader (category overrides, dashboards, chat context) picks the
@@ -381,7 +382,7 @@ def set_transfer_destination(review_id: str, destination: str) -> dict:
 
 def stage_as_transfer(review_id: str, meta: dict, note: str = "") -> None:
     """The user said an expense-queue item is money moved between their own
-    accounts: move it to the Internal Transfers queue to pick the other account."""
+    accounts: keep it in the Review Queue as a transfer card to pick the other account."""
     amount = meta.get("amount")
     bank = f"{meta['bank_name']} " if meta.get("bank_name") else ""
     if meta.get("transaction_type") == "credit":
