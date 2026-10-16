@@ -24,8 +24,10 @@ import "./ReviewQueuePage.css";
 import "./ReviewQueueTabs.css";
 
 /*
- * ReviewQueuePage - full-page Review Queue with three tabs:
- * Expenses, Internal Transfers and System Activity.
+ * ReviewQueuePage - full-page Review Queue with two tabs:
+ * Review Queue (expenses, credits and unconfirmed transfers that need the
+ * user) and Internal Transfers (the log of transfers Loamy auto-linked or
+ * the user confirmed).
  * All API logic lives in reviewQueueService.
  */
 const RECENT_PAGE_SIZE = 8;
@@ -53,7 +55,7 @@ const ReviewQueuePage = () => {
     }
   });
 
-  const [activeTab, setActiveTab] = useState("expenses");
+  const [activeTab, setActiveTab] = useState("review");
   const [items, setItems] = useState([]);
   const [transfers, setTransfers] = useState([]);
   const [accounts, setAccounts] = useState([]);
@@ -177,10 +179,10 @@ const ReviewQueuePage = () => {
     runTransferAction(id, () => confirmTransferPair(id), "Marked as a transfer between your own accounts.");
 
   const handleRejectTransfer = (id) =>
-    runTransferAction(id, () => rejectTransfer(id), "Moved back to your expense queue.");
+    runTransferAction(id, () => rejectTransfer(id), "Kept in your Review Queue as a normal transaction.");
 
   const handleUndo = (id) =>
-    runTransferAction(id, () => rejectTransfer(id), "Undone. It's back in your expense queue.");
+    runTransferAction(id, () => rejectTransfer(id), "Undone. It's back in your Review Queue.");
 
   const handleDestination = (id) => {
     const destination = destinations[id];
@@ -199,7 +201,7 @@ const ReviewQueuePage = () => {
     });
   })();
 
-  // Confirmed transfers live in System Activity, not in "Recently Logged".
+  // Confirmed transfers live in the Internal Transfers tab, not in "Recently Logged".
   const recentExpenses = resolved.filter((it) => !/internal transfer/i.test(it.category || ""));
 
   const recentPaged = paginate(recentExpenses, recentPage, RECENT_PAGE_SIZE);
@@ -209,15 +211,28 @@ const ReviewQueuePage = () => {
   const transferCount = transferCards.length;
   const count = expenseCount + transferCount;
 
-  const renderExpenses = () => (
+  const renderReview = () => (
     <>
       <section aria-labelledby="rqt-needs-review">
         <div className="rqt-section-head">
           <h2 id="rqt-needs-review">Needs Review</h2>
-          {expenseCount > 0 && <span className="rqt-count">{expenseCount}</span>}
+          {count > 0 && <span className="rqt-count">{count}</span>}
         </div>
-        {expenseCount > 0 ? (
+        {count > 0 ? (
           <div className="rqt-grid">
+            {transferCards.map((t) => (
+              <TransferCard
+                key={t.id}
+                transfer={t}
+                accounts={accounts}
+                destination={destinations[t.id]}
+                busy={submittingId === t.id}
+                onDestinationChange={(id, value) => setDestinations((prev) => ({ ...prev, [id]: value }))}
+                onConfirm={handleConfirmTransfer}
+                onLink={handleDestination}
+                onReject={handleRejectTransfer}
+              />
+            ))}
             {items.map((item) => (
               <ExpenseCard
                 key={item.id}
@@ -278,48 +293,14 @@ const ReviewQueuePage = () => {
   );
 
   const renderTransfers = () => (
-    <section aria-labelledby="rqt-transfers-title">
-      <div className="rqt-section-head">
-        <h2 id="rqt-transfers-title">Needs Confirmation</h2>
-        {transferCount > 0 && <span className="rqt-count">{transferCount}</span>}
-      </div>
-      <p className="rqt-section-sub">
-        Money you move between your own accounts isn&apos;t spending or income, so it stays out of your totals once confirmed.
-      </p>
-      {transferCount > 0 ? (
-        <div className="rqt-grid">
-          {transferCards.map((t) => (
-            <TransferCard
-              key={t.id}
-              transfer={t}
-              accounts={accounts}
-              destination={destinations[t.id]}
-              busy={submittingId === t.id}
-              onDestinationChange={(id, value) => setDestinations((prev) => ({ ...prev, [id]: value }))}
-              onConfirm={handleConfirmTransfer}
-              onLink={handleDestination}
-              onReject={handleRejectTransfer}
-            />
-          ))}
-        </div>
-      ) : (
-        <div className="rqt-empty">
-          <FontAwesomeIcon icon={faCheckCircle} className="rqt-empty-icon" />
-          <div className="rqt-empty-text">
-            <h3>No transfers to confirm</h3>
-            <p>Loamy links obvious transfers between your accounts automatically. Anything unclear lands here.</p>
-          </div>
-        </div>
-      )}
-    </section>
-  );
-
-  const renderActivity = () => (
     <section aria-labelledby="rqt-activity-title">
       <div className="rqt-section-head">
-        <h2 id="rqt-activity-title">System Activity</h2>
+        <h2 id="rqt-activity-title">Internal Transfers</h2>
+        {activity.length > 0 && <span className="rqt-count is-muted">{activity.length}</span>}
       </div>
-      <p className="rqt-section-sub">Transfers Loamy linked automatically or you confirmed. Undo sends one back to your queue.</p>
+      <p className="rqt-section-sub">
+        Money moved between your own accounts. Loamy logs obvious ones automatically and keeps them out of your spending and income. Undo sends one back to your Review Queue.
+      </p>
       {activity.length > 0 ? (
         <>
           <ActivityList entries={activityPaged.pageItems} busyId={submittingId} onUndo={handleUndo} />
@@ -336,7 +317,7 @@ const ReviewQueuePage = () => {
     </section>
   );
 
-  const panels = { expenses: renderExpenses, transfers: renderTransfers, activity: renderActivity };
+  const panels = { review: renderReview, transfers: renderTransfers };
 
   return (
     <div className="invoices-page">
@@ -407,7 +388,7 @@ const ReviewQueuePage = () => {
             <ReviewTabs
               active={activeTab}
               onChange={setActiveTab}
-              pending={{ expenses: expenseCount, transfers: transferCount }}
+              pending={{ review: count }}
             />
             <div
               className="rqt-panel"

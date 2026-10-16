@@ -1,4 +1,4 @@
-/* Review Queue - tabbed layout (Expenses / Internal Transfers / System Activity) */
+/* Review Queue - tabbed layout (Review Queue / Internal Transfers) */
 
 .invoices-main:has(.rqt-shell) {
   min-width: 0;

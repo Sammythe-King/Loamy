@@ -380,7 +380,7 @@ def interpret_note(vendor, amount, tx_type, note) -> dict:
         return {
             "category": INTERNAL_TRANSFER,
             "reply": "Got it, that's money moved between your own accounts. "
-                     "I've moved it to Internal Transfers so you can pick the account.",
+                     "Pick the other account on the card and I'll log it under Internal Transfers.",
             "unrelated": False,
         }
     allowed = (NOTE_INCOME_CATEGORIES if is_credit else NOTE_EXPENSE_CATEGORIES) + [INTERNAL_TRANSFER]
