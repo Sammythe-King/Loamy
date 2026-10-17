@@ -11,6 +11,7 @@ import re
 import json
 import asyncio
 import secrets
+import time
 from datetime import datetime, timedelta
 from calendar import monthrange
 
@@ -1513,8 +1514,8 @@ MANUAL_TRANSACTION_TOOL = {
 
 
 
-def extract_manual_transaction_call(text: str):
-    """Ask Gemini whether the message logs a spend; return its tool-call args or None."""
+def extract_manual_transaction_calls(text: str) -> list:
+    """Ask Gemini whether the message logs spends; return one args dict per expense."""
     today = datetime.now()
     prompt = (
         f"Today is {today.strftime('%A, %Y-%m-%d')}. You route WhatsApp messages for Loamy, "
@@ -1530,6 +1531,9 @@ def extract_manual_transaction_call(text: str):
         "If the user gives NO currency, set currency to NGN (the base currency); the app will append a note "
         "letting them correct it.\n"
         "Description: say what it was for (e.g. 'Lunch', 'Taxi'); if the user did not say, use 'Cash expense'.\n"
+        "Several expenses in one message (e.g. '800 rupees on fuel and another 200 on groceries, both in cash'): "
+        "call add_manual_transaction once per expense, reusing the currency and date the user stated for the others. "
+        "Tolerate typos such as 'ruppes'.\n"
         "Questions about spending, goals, invoices or anything else must NOT call the tool.\n\n"
         f"User message: {text}"
     )
@@ -1538,17 +1542,18 @@ def extract_manual_transaction_call(text: str):
         tools=[MANUAL_TRANSACTION_TOOL],
         tool_config={"function_calling_config": {"mode": "AUTO"}},
     )
+    calls = []
     for candidate in response.candidates or []:
         for part in candidate.content.parts or []:
             call = getattr(part, "function_call", None)
             if call and call.name == "add_manual_transaction":
-                return {key: value for key, value in call.args.items()}
-    return None
+                calls.append({key: value for key, value in call.args.items()})
+    return calls
 
 
 
 _CURRENCY_MENTION_RE = re.compile(
-    r"(₦|\bngn\b|\bnaira\b|\bmur\b|\brs\.?(?=\s*\d)|\brupees?\b|\$|\busd\b|\bdollars?\b|"
+    r"(₦|\bngn\b|\bnaira\b|\bmur\b|\brs\.?(?=\s*\d)|\brupp?e{1,2}s?\b|\$|\busd\b|\bdollars?\b|"
     r"£|\bgbp\b|\bpounds?\b|€|\beur\b|\beuros?\b|\bkes\b|\bzar\b|\binr\b)",
     re.IGNORECASE,
 )
@@ -1624,28 +1629,44 @@ async def _try_log_manual_transaction(text: str, user_id: str):
     if corrected:
         return corrected
     try:
-        args = await asyncio.to_thread(extract_manual_transaction_call, text)
+        calls = await asyncio.to_thread(extract_manual_transaction_calls, text)
     except Exception as e:
-        print(f"[WhatsApp bridge] manual-entry function call failed: {e}")
+        print(f"[chat] manual-entry function call failed: {e}")
         return None
-    if not args:
+    if not calls:
         return None
 
-    result = await asyncio.to_thread(
-        add_manual_transaction,
-        user_id,
-        args.get("amount"),
-        args.get("currency") or "NGN",
-        args.get("category") or "",
-        args.get("description") or "",
-        args.get("date"),
-        "manual_cash",
-    )
-    if result["status"] != "success":
-        print(f"[WhatsApp bridge] manual entry save failed: {result['error']}")
+    logged_transactions = []
+    for args in calls:
+        result = await asyncio.to_thread(
+            add_manual_transaction,
+            user_id,
+            args.get("amount"),
+            args.get("currency") or "NGN",
+            args.get("category") or "",
+            args.get("description") or "",
+            args.get("date"),
+            "manual_cash",
+        )
+        if result["status"] == "success":
+            logged_transactions.append(result["data"])
+        else:
+            print(f"[chat] manual entry save failed: {result['error']}")
+    if not logged_transactions:
         return "I couldn't log that expense just now. Please try again in a moment."
 
-    tx = result["data"]
+    if len(logged_transactions) > 1:
+        lines = [
+            f"• *{tx['description']}*: {format_logged_amount(tx['amount_ngn'], tx['original_amount'], tx['original_currency'])} ({tx['category']})"
+            for tx in logged_transactions
+        ]
+        return (
+            f"\u270d\ufe0f *{len(logged_transactions)} Expenses Logged!*\n"
+            + "\n".join(lines)
+            + "\n\n_Synced to your Loamy dashboard_"
+        )
+
+    tx = logged_transactions[0]
     date_label = datetime.fromisoformat(tx["date"]).strftime("%b %d")
     footer = (
         "_Tap Review Queue in Loamy to pick a category_"
