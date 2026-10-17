@@ -97,7 +97,11 @@ const ExpenseCard = ({ item, busy, onResolve, onReply, onDismiss }) => {
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
           disabled={busy}
-          placeholder={isCredit ? CREDIT_EXAMPLES : DEBIT_EXAMPLES}
+          placeholder={
+            item.item_kind === "transfer"
+              ? "e.g. yes, I moved it to my GTBank account"
+              : isCredit ? CREDIT_EXAMPLES : DEBIT_EXAMPLES
+          }
           aria-label={`Tell Loamy about ${item.vendor || "this transaction"}`}
         />
         <button
