@@ -138,7 +138,7 @@ def _resolve_pending_transfer(review_id: str, meta: dict, reply: str, history) -
     category = understood.get("category")
     if not category:
         return _ok({"resolved": False, "unrelated": bool(understood.get("unrelated")),
-                    "reply": understood.get("reply") or "Is this money moved between your own accounts, or what was it for?"})
+                    "reply": understood.get("reply") or ("Who or what was this money from?" if is_credit else "What was this money for?")})
     if categorizer.is_internal_transfer(category):
         return _file_as_transfer(review_id, meta, note)
     transfers.reject_transfer(review_id)

@@ -185,6 +185,26 @@ def _naira(value) -> str:
     return f"\u20a6{float(value or 0):,.0f}"
 
 
+def pending_question(meta: dict) -> str:
+    """The question a pending transfer card shows. Always 'what was it for' /
+    'who was it from', the same as an expense card, so cards stored with older
+    yes/no wording read the same. A card the user already answered keeps its
+    follow-up question."""
+    if meta.get("user_reply"):
+        return meta.get("nudge") or ""
+    amount = _naira(meta.get("amount"))
+    bank = meta.get("bank_name") or ""
+    date = str(meta.get("date") or "")
+    when = f" on {date}" if date else ""
+    where = f" {bank}" if bank else ""
+    if meta.get("transfer_stage") == STAGE_CANDIDATE:
+        return (f"{amount} left one of your accounts and {amount} arrived in another around {date}. "
+                f"What was this money for?")
+    if meta.get("transaction_type") == "credit":
+        return f"{amount} arrived in your{where} account{when}. Who or what was it from? (e.g. repayment from my brother, or pay for the shoes I sold)"
+    return f"{amount} left your{where} account{when}. What was it for? (e.g. stock, supplies, a bill, or lunch)"
+
+
 def _leg_meta(user_id: str, email: dict, partner, stage: str, pair_id: str, status: str) -> dict:
     amount = _amount_of(email)
     tx_type = "credit" if email.get("transaction_type") == "credit" else "debit"
@@ -196,15 +216,14 @@ def _leg_meta(user_id: str, email: dict, partner, stage: str, pair_id: str, stat
         vendor = f"Transfer {bank} to {other_bank}" if tx_type == "debit" else f"Transfer {other_bank} to {bank}"
     elif stage == STAGE_CANDIDATE:
         nudge = (f"{_naira(amount)} left one of your accounts and {_naira(amount)} arrived in another around "
-                 f"{date}. Is this one transfer between your own accounts?")
+                 f"{date}. What was this money for?")
         vendor = f"{bank} / {other_bank}"
     elif tx_type == "debit":
-        nudge = (f"{_naira(amount)} left your {bank} account{' on ' + date if date else ''}. Did you move it to "
-                 f"one of your own accounts? If so, tell me which one. If not, tell me what it was for.")
+        nudge = (f"{_naira(amount)} left your {bank} account{' on ' + date if date else ''}. What was it for?")
         vendor = _narration_of(email)[:60]
     else:
-        nudge = (f"{_naira(amount)} arrived in your {bank} account{' on ' + date if date else ''}. Did it come "
-                 f"from one of your own accounts? If so, tell me which one. If not, tell me who it was from.")
+        nudge = (f"{_naira(amount)} arrived in your {bank} account{' on ' + date if date else ''}. Who or what "
+                 f"was it from?")
         vendor = _narration_of(email)[:60]
     now = datetime.now().isoformat()
     return {
@@ -386,11 +405,10 @@ def stage_as_transfer(review_id: str, meta: dict, note: str = "") -> None:
     """The user said an expense-queue item is money moved between their own
     accounts: keep it in the Review Queue as a transfer card to pick the other account."""
     amount = meta.get("amount")
-    bank = f"{meta['bank_name']} " if meta.get("bank_name") else ""
     if meta.get("transaction_type") == "credit":
-        nudge = f"Confirm source account for {_naira(amount)} {bank}credit."
+        nudge = f"Got it. Which of your accounts did the {_naira(amount)} come from?"
     else:
-        nudge = f"Confirm destination account for {_naira(amount)} {bank}debit."
+        nudge = f"Got it. Which of your accounts did the {_naira(amount)} go to?"
     meta.update({
         "item_kind": KIND_TRANSFER, "transfer_stage": STAGE_SINGLE, "pair_id": "",
         "transfer_rejected": False, "status": "pending", "category": "",

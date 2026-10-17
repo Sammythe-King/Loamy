@@ -25,6 +25,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Form, Background
 import database
 import categorizer
 import transfers
+import transfers as transfers_module
 import review_actions
 import chat_service
 from models import (
@@ -1495,7 +1496,10 @@ async def get_review_queue(user_id: str):
                 group_key = meta.get("pair_id") or results["ids"][i]
                 linked_groups.setdefault(group_key, []).append({"id": results["ids"][i], **meta})
             if status == "pending":
-                (transfers if is_transfer else items).append({"id": results["ids"][i], **meta})
+                entry = {"id": results["ids"][i], **meta}
+                if is_transfer:
+                    entry["nudge"] = transfers_module.pending_question(meta)
+                (transfers if is_transfer else items).append(entry)
             elif status == "resolved" and not (is_transfer and meta.get("transfer_stage") == "linked"
                                                and meta.get("user_reply") == "Auto-matched internal transfer"):
                 resolved.append({"id": results["ids"][i], **meta})
