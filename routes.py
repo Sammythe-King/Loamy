@@ -1481,7 +1481,10 @@ async def get_review_queue(user_id: str):
         # Blocking ChromaDB work; keep it off the event loop so one slow scan
         # can't stall /get-chats and every other request on the instance.
         def _load():
-            _scan_bank_emails_for_review(user_id)
+            try:
+                _scan_bank_emails_for_review(user_id)
+            except Exception as e:
+                print(f"[REVIEW] email scan failed, showing the saved queue: {e}")
             return review_queue_collection.get(where={"user_id": user_id})
         results = await asyncio.to_thread(_load)
         items = []

@@ -78,12 +78,19 @@ const ChatPage = () => {
     const fileInputRef = useRef(null);
     const inputRef = useRef(null);
 
+    // Once the message wraps or has a line break, the tools drop below the text
+    // (like Gemini). It only collapses back when the box is emptied, so the
+    // layout can't flip back and forth while typing.
+    const [composerExpanded, setComposerExpanded] = useState(false);
+
     useEffect(() => {
         const el = inputRef.current;
         if (!el) return;
         el.style.height = "auto";
         el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-    }, [inputText]);
+        if (!inputText) setComposerExpanded(false);
+        else if (inputText.includes("\n") || el.scrollHeight > 48) setComposerExpanded(true);
+    }, [inputText, composerExpanded]);
 
     // Check session on mount
     useEffect(() => {
@@ -278,6 +285,7 @@ const createNewChat = async (title) => {
     // Handle text chat submission
     const handleSubmit = async (e) => {
         if (e) e.preventDefault();
+        if (isLoading) return;
         
         // Handle file upload
         if (pendingFile) {
@@ -774,9 +782,10 @@ const createNewChat = async (title) => {
                         </div>
                     )}
                     
-                    <form className="input-wrapper" onSubmit={handleSubmit}>
-                        <label className="icon-btn" title="Upload Receipt">
+                    <form className={`input-wrapper ${composerExpanded ? "is-expanded" : ""}`} onSubmit={handleSubmit}>
+                        <label className="icon-btn composer-tool composer-attach" title="Upload Receipt" aria-label="Upload receipt">
                             <FontAwesomeIcon icon={faPaperclip} />
+                            <span className="composer-tool-label">Receipt</span>
                             <input 
                                 type="file" 
                                 hidden 
@@ -787,11 +796,13 @@ const createNewChat = async (title) => {
                         </label>
                         <button 
                             type="button"
-                            className={`icon-btn gmail-btn ${gmailConnected ? "connected" : ""}`}
+                            className={`icon-btn composer-tool composer-gmail gmail-btn ${gmailConnected ? "connected" : ""}`}
                             title={gmailConnected ? "Gmail Connected" : "Connect Gmail"}
+                            aria-label={gmailConnected ? "Gmail connected" : "Connect Gmail"}
                             onClick={() => navigate("/gmail-connect")}
                         >
                             <FontAwesomeIcon icon={faEnvelope} />
+                            <span className="composer-tool-label">{gmailConnected ? "Gmail connected" : "Gmail"}</span>
                         </button>
                         <textarea
                             ref={inputRef}
@@ -807,7 +818,8 @@ const createNewChat = async (title) => {
                                 handleSubmit(e);
                             }}
                         />
-                        <button type="submit" className="send-btn" disabled={isLoading}>
+                        <span className="composer-hint" aria-hidden="true">Enter to send &middot; Shift + Enter for a new line</span>
+                        <button type="submit" className="send-btn" disabled={isLoading} aria-label="Send message">
                             <FontAwesomeIcon icon={faArrowUp} />
                         </button>
                     </form>
