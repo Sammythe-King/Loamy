@@ -1621,8 +1621,31 @@ async def _try_currency_correction(text: str, user_id: str):
 
 
 
+_recent_manual_logs: dict = {}
+_MANUAL_LOG_DEDUPE_SECONDS = 120
+
+
 async def _try_log_manual_transaction(text: str, user_id: str):
-    """Returns a confirmation card if the message was a spend report, else None."""
+    """Returns a confirmation card if the message was a spend report, else None.
+
+    The same message re-sent within a couple of minutes (a retry after an error,
+    a double Enter) is answered with the earlier card instead of logging twice."""
+    key = (user_id, re.sub(r"\s+", " ", (text or "").strip().lower()))
+    now = time.time()
+    for stale_key in [k for k, (stamp, _) in _recent_manual_logs.items()
+                      if now - stamp > _MANUAL_LOG_DEDUPE_SECONDS]:
+        _recent_manual_logs.pop(stale_key, None)
+    previous = _recent_manual_logs.get(key)
+    if previous:
+        return "I already logged that a moment ago, so I haven't added it again.\n\n" + previous[1]
+
+    reply = await _log_manual_transactions(text, user_id)
+    if reply and reply.startswith("\u270d"):
+        _recent_manual_logs[key] = (now, reply)
+    return reply
+
+
+async def _log_manual_transactions(text: str, user_id: str):
     if not re.search(r"\d", text or ""):
         return None
     corrected = await _try_currency_correction(text, user_id)

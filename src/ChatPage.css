@@ -456,7 +456,9 @@
 
 /* Input Container */
 .input-container {
-    padding: 16px 24px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 12px 16px 10px;
     background: white;
     border-top: 1px solid rgba(0, 0, 0, 0.08);
 }
@@ -518,16 +520,85 @@
 }
 
 .input-wrapper {
-    display: flex;
-    align-items: flex-end;
-    gap: 12px;
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    grid-template-areas: "attach gmail text send";
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 4px;
+    width: 100%;
     background: rgba(191, 191, 156, 0.15);
-    border-radius: 20px;
-    padding: 8px 16px;
+    border: 1px solid transparent;
+    border-radius: 28px;
+    padding: 8px 12px;
+    transition: border-radius 0.2s ease, border-color 0.2s ease, background-color 0.2s ease;
 }
+
+.input-wrapper:focus-within {
+    border-color: rgba(34, 90, 36, 0.35);
+    background: rgba(191, 191, 156, 0.2);
+}
+
+.input-wrapper .composer-attach { grid-area: attach; }
+.input-wrapper .composer-gmail { grid-area: gmail; }
+.input-wrapper .chat-textarea { grid-area: text; }
+.input-wrapper .composer-hint { grid-area: hint; }
+.input-wrapper .send-btn { grid-area: send; }
 
 .input-wrapper .icon-btn {
     height: 40px;
+    gap: 6px;
+    border-radius: 999px;
+}
+
+.composer-tool-label,
+.composer-hint {
+    display: none;
+}
+
+.composer-hint {
+    font-size: 12px;
+    color: rgba(0, 0, 0, 0.4);
+    align-self: center;
+    padding-left: 4px;
+}
+
+/* Expanded: the text gets the full width on top, tools and send sit underneath. */
+.input-wrapper.is-expanded {
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    grid-template-areas:
+        "text text text text"
+        "attach gmail hint send";
+    border-radius: 22px;
+    padding: 12px 12px 8px 20px;
+}
+
+.input-wrapper.is-expanded .chat-textarea {
+    padding: 4px 8px 8px 0;
+}
+
+.input-wrapper.is-expanded .composer-tool {
+    height: 36px;
+    padding: 0 12px;
+    font-size: 13px;
+    font-weight: 500;
+    background: rgba(34, 90, 36, 0.08);
+    color: #225a24;
+}
+
+.input-wrapper.is-expanded .composer-tool:hover {
+    background: rgba(34, 90, 36, 0.16);
+}
+
+.input-wrapper.is-expanded .composer-tool-label,
+.input-wrapper.is-expanded .composer-hint {
+    display: inline;
+}
+
+@media (max-width: 600px) {
+    .input-wrapper.is-expanded .composer-hint {
+        display: none;
+    }
 }
 
 .icon-btn {

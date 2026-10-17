@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Link } from "react-router-dom";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
@@ -69,24 +69,36 @@ const ReviewQueuePage = () => {
   // must NOT re-arm that full-page loading state - doing so wiped the whole
   // list back to a blank "Loading..." screen every 30 seconds, which is why
   // the page looked stuck.
+  const hasLoadedRef = useRef(false);
+
+  // A failed request (server restarting, a slow email scan timing out) must not
+  // replace a queue that already loaded. Background polls fail quietly, and the
+  // first load retries a few times before it shows an error.
   const loadQueue = useCallback(async (isInitial = false) => {
     if (isInitial) setLoading(true);
-    setError(null);
-    try {
-      const res = await fetchReviewQueue(userId);
-      if (res.status === "success") {
-        setItems(res.data?.items || []);
-        setTransfers(res.data?.transfers || []);
-        setActivity(res.data?.activity || []);
-        setResolved(res.data?.resolved || []);
-      } else {
-        setError(res.error || "Could not load the review queue.");
+    const attempts = isInitial ? 3 : 1;
+    let failure = null;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        const res = await fetchReviewQueue(userId);
+        if (res.status === "success") {
+          setItems(res.data?.items || []);
+          setTransfers(res.data?.transfers || []);
+          setActivity(res.data?.activity || []);
+          setResolved(res.data?.resolved || []);
+          hasLoadedRef.current = true;
+          setError(null);
+          failure = null;
+          break;
+        }
+        failure = res.error || "Could not load the review queue.";
+      } catch {
+        failure = "Could not reach Loamy. Check your connection and try again.";
       }
-    } catch {
-      setError("Network error. Please try again.");
-    } finally {
-      if (isInitial) setLoading(false);
+      if (attempt < attempts - 1) await new Promise((r) => setTimeout(r, 1500));
     }
+    if (failure && !hasLoadedRef.current) setError(failure);
+    if (isInitial) setLoading(false);
   }, [userId]);
 
   useEffect(() => {
