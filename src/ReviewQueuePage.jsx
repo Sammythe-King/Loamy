@@ -10,13 +10,10 @@ import {
   resolveReviewItem,
   dismissReviewItem,
   seedDemoReview,
-  confirmTransferPair,
-  setTransferDestination,
   rejectTransfer,
 } from "./services/reviewQueueService";
 import ReviewTabs from "./components/reviewQueue/ReviewTabs";
 import ExpenseCard from "./components/reviewQueue/ExpenseCard";
-import TransferCard from "./components/reviewQueue/TransferCard";
 import ActivityList from "./components/reviewQueue/ActivityList";
 import Pagination, { paginate } from "./components/reviewQueue/Pagination";
 import "./InvoicesPage.css";
@@ -58,9 +55,7 @@ const ReviewQueuePage = () => {
   const [activeTab, setActiveTab] = useState("review");
   const [items, setItems] = useState([]);
   const [transfers, setTransfers] = useState([]);
-  const [accounts, setAccounts] = useState([]);
   const [activity, setActivity] = useState([]);
-  const [destinations, setDestinations] = useState({});
   const [resolved, setResolved] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -82,7 +77,6 @@ const ReviewQueuePage = () => {
       if (res.status === "success") {
         setItems(res.data?.items || []);
         setTransfers(res.data?.transfers || []);
-        setAccounts(res.data?.accounts || []);
         setActivity(res.data?.activity || []);
         setResolved(res.data?.resolved || []);
       } else {
@@ -116,7 +110,10 @@ const ReviewQueuePage = () => {
         setError(res.error || "Could not save your choice.");
         return "Sorry, I couldn't save that. Please try again.";
       }
-      if (res.data?.resolved === false) return res.data.reply;
+      if (res.data?.resolved === false) {
+        if (res.data?.moved_to === "expenses") await loadQueue(false);
+        return res.data.reply;
+      }
       showNote(res.data?.confirmation || "Logged.");
       if (res.data?.moved_to === "transfers") {
         setItems((prev) => prev.filter((it) => it.id !== id));
@@ -145,8 +142,13 @@ const ReviewQueuePage = () => {
 
   const handleDismiss = async (id) => {
     try {
-      await dismissReviewItem(id);
+      const target = transfers.find((t) => t.id === id);
+      const ids = target?.pair_id
+        ? transfers.filter((t) => t.pair_id === target.pair_id).map((t) => t.id)
+        : [id];
+      await Promise.all(ids.map((rid) => dismissReviewItem(rid)));
       setItems((prev) => prev.filter((it) => it.id !== id));
+      setTransfers((prev) => prev.filter((t) => !ids.includes(t.id)));
     } catch {
       setError("Could not dismiss this item.");
     }
@@ -175,20 +177,8 @@ const ReviewQueuePage = () => {
     }
   };
 
-  const handleConfirmTransfer = (id) =>
-    runTransferAction(id, () => confirmTransferPair(id), "Marked as a transfer between your own accounts.");
-
-  const handleRejectTransfer = (id) =>
-    runTransferAction(id, () => rejectTransfer(id), "Kept in your Review Queue as a normal transaction.");
-
   const handleUndo = (id) =>
     runTransferAction(id, () => rejectTransfer(id), "Undone. It's back in your Review Queue.");
-
-  const handleDestination = (id) => {
-    const destination = destinations[id];
-    if (!destination) return;
-    runTransferAction(id, () => setTransferDestination(id, destination), "Transfer linked to your account.");
-  };
 
   // A candidate pair has two legs in the queue: show it once.
   const transferCards = (() => {
@@ -200,6 +190,12 @@ const ReviewQueuePage = () => {
       return true;
     });
   })();
+
+  // Expenses and unconfirmed transfers share one list of chat cards, so a card keeps
+  // its conversation when the answer moves it from one kind to the other.
+  const needsReview = [...transferCards, ...items].sort((a, b) =>
+    String(b.created_at || "").localeCompare(String(a.created_at || ""))
+  );
 
   // Confirmed transfers live in the Internal Transfers tab, not in "Recently Logged".
   const recentExpenses = resolved.filter((it) => !/internal transfer/i.test(it.category || ""));
@@ -220,20 +216,7 @@ const ReviewQueuePage = () => {
         </div>
         {count > 0 ? (
           <div className="rqt-grid">
-            {transferCards.map((t) => (
-              <TransferCard
-                key={t.id}
-                transfer={t}
-                accounts={accounts}
-                destination={destinations[t.id]}
-                busy={submittingId === t.id}
-                onDestinationChange={(id, value) => setDestinations((prev) => ({ ...prev, [id]: value }))}
-                onConfirm={handleConfirmTransfer}
-                onLink={handleDestination}
-                onReject={handleRejectTransfer}
-              />
-            ))}
-            {items.map((item) => (
+            {needsReview.map((item) => (
               <ExpenseCard
                 key={item.id}
                 item={item}

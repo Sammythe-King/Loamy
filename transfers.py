@@ -199,10 +199,12 @@ def _leg_meta(user_id: str, email: dict, partner, stage: str, pair_id: str, stat
                  f"{date}. Is this one transfer between your own accounts?")
         vendor = f"{bank} / {other_bank}"
     elif tx_type == "debit":
-        nudge = f"Confirm destination account for {_naira(amount)} {bank} debit."
+        nudge = (f"{_naira(amount)} left your {bank} account{' on ' + date if date else ''}. Did you move it to "
+                 f"one of your own accounts? If so, tell me which one. If not, tell me what it was for.")
         vendor = _narration_of(email)[:60]
     else:
-        nudge = f"Confirm source account for {_naira(amount)} {bank} credit."
+        nudge = (f"{_naira(amount)} arrived in your {bank} account{' on ' + date if date else ''}. Did it come "
+                 f"from one of your own accounts? If so, tell me which one. If not, tell me who it was from.")
         vendor = _narration_of(email)[:60]
     now = datetime.now().isoformat()
     return {

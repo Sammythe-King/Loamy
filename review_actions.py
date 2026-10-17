@@ -9,6 +9,7 @@ lets the chat bring up an unanswered item ("Also, I wanted to ask...") and
 treat the user's next message as the answer.
 """
 
+import re
 import uuid
 from datetime import datetime, timedelta
 
@@ -69,6 +70,81 @@ def _remember_vendor(meta: dict, category: str) -> None:
         print(f"[REVIEW] Vendor memory save error: {e}")
 
 
+_NO_RE = re.compile(r"^\s*(no|nope|nah)\b|not\s+(a\s+)?transfer|isn'?t\s+(a\s+)?transfer", re.IGNORECASE)
+_BARE_NO_WORDS = {"no", "nope", "nah", "not", "a", "an", "it", "its", "it's", "is", "isn't", "was", "wasn't",
+                  "transfer", "thanks", "please", "that", "this", "that's"}
+_BARE_YES_WORDS = {"yes", "yeah", "yep", "yup", "yh", "y", "correct", "sure", "right", "it", "is", "was",
+                   "that", "this", "that's", "thats", "please", "indeed"}
+_ACCOUNT_RE = re.compile(
+    r"\b(?:to|from|into|in)\s+(?:my\s+)?([A-Za-z][A-Za-z0-9&]*(?:\s[A-Za-z0-9&]+)?)\s+(?:account|acct|bank)\b",
+    re.IGNORECASE,
+)
+_GENERIC_ACCOUNT_WORDS = {"other", "another", "second", "own", "my", "same", "first", "new", "old"}
+
+
+def _only_words(text: str, allowed: set) -> bool:
+    words = re.findall(r"[A-Za-z']+", str(text or "").lower())
+    return bool(words) and all(w in allowed for w in words)
+
+
+def _destination_from(note: str, meta: dict) -> str:
+    """The other account named in the note, else what the matcher already knew."""
+    match = _ACCOUNT_RE.search(note or "")
+    if match:
+        name = match.group(1).strip()
+        if name.lower() not in _GENERIC_ACCOUNT_WORDS:
+            return name if not name.islower() else name.title()
+    return meta.get("counterpart_bank") or meta.get("destination_account") or "Another account of mine"
+
+
+def _file_as_transfer(review_id: str, meta: dict, note: str) -> dict:
+    """Close the item (and its other side, when matched) as an Internal Transfer."""
+    res = transfers.confirm_transfer_pair(review_id)
+    if res["status"] != "success":
+        res = transfers.set_transfer_destination(review_id, _destination_from(note, meta))
+    if res["status"] != "success":
+        return res
+    return _ok({
+        "resolved": True, "category": categorizer.INTERNAL_TRANSFER, "vendor": meta.get("vendor", ""),
+        "moved_to": "transfers",
+        "confirmation": f"Got it. Logged {_naira(meta.get('amount'))} as a transfer between your own accounts. "
+                        f"It's under Internal Transfers and won't count as spending.",
+    })
+
+
+def _resolve_pending_transfer(review_id: str, meta: dict, reply: str, history) -> dict:
+    """A transfer card in the Review Queue answered in plain language: yes/which
+    account files it as an Internal Transfer, anything else sends it back to be
+    understood as a normal expense or income."""
+    note = " | ".join([*(h for h in (history or []) if h), reply])
+    is_credit = meta.get("transaction_type") == "credit"
+
+    if _NO_RE.search(reply):
+        transfers.reject_transfer(review_id)
+        if _only_words(reply, _BARE_NO_WORDS):
+            ask = "who it was from" if is_credit else "what it was for"
+            return _ok({"resolved": False, "unrelated": False, "moved_to": "expenses",
+                        "reply": f"No problem, I've kept it as a normal transaction. Can you tell me {ask}?"})
+        res = resolve_item(review_id, reply, history=history)
+        if res["status"] == "success" and not (res["data"] or {}).get("resolved"):
+            res["data"]["moved_to"] = "expenses"
+        return res
+
+    if categorizer.note_means_internal_transfer(note) or _only_words(reply, _BARE_YES_WORDS):
+        return _file_as_transfer(review_id, meta, note)
+
+    understood = categorizer.interpret_note(
+        meta.get("vendor", ""), meta.get("amount", 0), meta.get("transaction_type") or "debit", note)
+    category = understood.get("category")
+    if not category:
+        return _ok({"resolved": False, "unrelated": bool(understood.get("unrelated")),
+                    "reply": understood.get("reply") or "Is this money moved between your own accounts, or what was it for?"})
+    if categorizer.is_internal_transfer(category):
+        return _file_as_transfer(review_id, meta, note)
+    transfers.reject_transfer(review_id)
+    return resolve_item(review_id, reply, category=category, history=history)
+
+
 def resolve_item(review_id: str, reply: str = "", category: str = "", history=None) -> dict:
     """Understand `reply` (plus earlier messages in `history`) and file the item.
 
@@ -88,6 +164,9 @@ def resolve_item(review_id: str, reply: str = "", category: str = "", history=No
     vendor = meta.get("vendor", "")
     ai_reply = ""
 
+    if transfers.is_transfer_item(meta) and meta.get("status") == "pending":
+        return _resolve_pending_transfer(review_id, meta, reply, history)
+
     if not category:
         note = " | ".join([*(h for h in (history or []) if h), reply])
         understood = categorizer.interpret_note(
@@ -105,12 +184,7 @@ def resolve_item(review_id: str, reply: str = "", category: str = "", history=No
 
     if categorizer.is_internal_transfer(category):
         transfers.stage_as_transfer(review_id, meta, reply)
-        return _ok({
-            "resolved": True, "category": categorizer.INTERNAL_TRANSFER, "vendor": vendor,
-            "moved_to": "transfers",
-            "confirmation": ai_reply or "Got it, that's a transfer between your own accounts. "
-                                        "Pick the other account on the card and it will be logged under Internal Transfers.",
-        })
+        return _file_as_transfer(review_id, meta, reply)
 
     meta.update({"status": "resolved", "user_reply": reply, "category": category,
                  "resolved_at": datetime.now().isoformat()})
