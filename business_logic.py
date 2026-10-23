@@ -14,8 +14,8 @@ from datetime import datetime, timedelta
 
 import database
 import categorizer
+import gemini_gateway
 from models import (
-    model,
     pending_conversions_collection,
     notifications_collection,
     gmail_data_collection,
@@ -385,13 +385,14 @@ def process_receipt_image(file_data, content_type, user_id="default"):
     event loop (Atomic Modularity + Logic/UI Separation rules)."""
     try:
         # Multimodal call to Gemini
-        response = model.generate_content(
+        receipt_text = gemini_gateway.generate(
+            "receipt_vision",
             [SYSTEM_PROMPT, {"mime_type": content_type, "data": file_data}],
-            generation_config={"response_mime_type": "application/json"}
+            user_id=user_id, json_mode=True, max_output_tokens=2048,
         )
         
         # Parse the JSON directly
-        transaction_data = json.loads(response.text)
+        transaction_data = json.loads(receipt_text)
         
         # --- CURRENCY DETECTION & CONVERSION (Step A) ---
         # First, use AI-detected currency from the response
@@ -525,6 +526,8 @@ def process_receipt_image(file_data, content_type, user_id="default"):
 
     except Exception as e:
         print(f"Backend Error: {str(e)}")
+        if isinstance(e, gemini_gateway.GeminiGatewayError):
+            return {"error": gemini_gateway.user_message(e)}
         return {"error": str(e)}
 
 

@@ -30,7 +30,6 @@ import transfers as transfers_module
 import review_actions
 import chat_service
 from models import (
-    model,
     collection,
     goals_collection,
     accounts_collection,

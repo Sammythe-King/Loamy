@@ -12,7 +12,6 @@ to migrate. This module instead centralizes the equivalent cross-cutting
 initialization that used to live scattered across main.py's module scope.
 """
 import os
-import google.generativeai as genai
 from dotenv import load_dotenv
 
 # Load .env before any os.getenv() calls below (e.g. the Gemini API key).
@@ -43,13 +42,10 @@ gmail_credentials_collection = _get_collection("gmail_credentials")  # Per-user 
 
 
 
-API_KEY = os.getenv("GEMINI_API_KEY")
-if not API_KEY:
+# Gemini is no longer configured here. Every LLM call goes through gemini_gateway.py,
+# which owns the client, the key, the rate limits and the circuit breaker.
+if not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
     raise ValueError("Missing GEMINI_API_KEY. Add it to your .env file.")
-genai.configure(api_key=API_KEY)
-
-# Using gemini-2.5-flash for faster responses with good context
-model = genai.GenerativeModel('gemini-2.5-flash')
 
 
 # ==========================================

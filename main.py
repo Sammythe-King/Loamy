@@ -1,6 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-import google.generativeai as genai
 import json
 import os
 import re
