@@ -15,17 +15,16 @@ import time
 from datetime import datetime, timedelta
 from calendar import monthrange
 
-import google.generativeai as genai
 from dotenv import load_dotenv
 
 load_dotenv()
 
 import database
 import categorizer
+import gemini_gateway
 import review_actions
 from whatsapp import WHATSAPP_FORMAT_RULES, set_ai_handler, set_receipt_handler
 from models import (
-    model,
     goals_collection,
     accounts_collection,
     expenses_collection,
@@ -46,25 +45,6 @@ from business_logic import (
     convert_to_local_currency,
     normalize_category,
 )
-
-import os
-import secrets
-from datetime import datetime
-
-import google.generativeai as genai
-from dotenv import load_dotenv
-
-import database
-
-load_dotenv()
-
-# --- Model config (self-contained so this module can be swapped independently) ---
-_API_KEY = os.getenv("GEMINI_API_KEY")
-if not _API_KEY:
-    raise ValueError("Missing GEMINI_API_KEY. Add it to your .env file.")
-genai.configure(api_key=_API_KEY)
-
-_model = genai.GenerativeModel("gemini-2.5-flash")
 
 _ADVISOR_PERSONA = """You are Loamy, a friendly and precise financial advisor for an
 African fintech app. You help users understand their cash flow, transactions, invoices,
@@ -368,11 +348,15 @@ def apply_chat_categorization(user_id: str, vendor: str, category: str, amount=N
     return updated
 
 
-def generate_reply(model_instance, advisor_prompt: str, user_id: str, user_msg: str) -> str:
-    """Generate a reply for the history-based chat flow using this service's model."""
+def generate_reply(advisor_prompt: str, user_id: str, user_msg: str) -> str:
+    """Generate a reply for the history-based chat flow through the Gemini gateway,
+    so web chat and WhatsApp share the per-user hourly limit and the circuit breaker.
+    Raises GeminiGatewayError when the call is refused or fails."""
     prompt = f"{advisor_prompt}\n\nUser question: {user_msg}\n\nYour answer:"
-    response = model_instance.generate_content(prompt)
-    return (response.text or "").strip() or "I'm not sure how to answer that yet."
+    text = gemini_gateway.generate(
+        "chat_reply", prompt, user_id=user_id, temperature=0.4, max_output_tokens=4096,
+    )
+    return text.strip() or "I'm not sure how to answer that yet."
 
 
 def build_financial_snapshot(user_id: str) -> str:
@@ -550,11 +534,12 @@ def handle_chat_turn(user_id: str, message: str, chat_id: str = None, channel: s
         history_block = (f"\n\n=== RECENT CONVERSATION (all channels, oldest first) ===\n{history_text}"
                          if history_text else "")
         prompt = f"{persona}\n\n{context_text}{history_block}\n\nUser question: {message}\n\nYour answer:"
-        response = _model.generate_content(prompt)
-        reply = (response.text or "").strip() or "I'm not sure how to answer that yet."
+        reply = gemini_gateway.generate(
+            "chat_reply", prompt, user_id=user_id, temperature=0.4, max_output_tokens=4096,
+        ).strip() or "I'm not sure how to answer that yet."
     except Exception as e:
         print(f"[chat_service] Gemini call failed: {e}")
-        return "I'm having trouble thinking right now. Please try again in a moment."
+        return gemini_gateway.user_message(e)
 
     record_chat_turn(user_id, message, reply, channel=channel, user_at=asked_at)
 
@@ -845,8 +830,11 @@ async def chat_with_history(query: dict):
         If info is missing or goal exists, return: {{"is_goal": false}}
         Return ONLY JSON.
         """
-        detect_res = model.generate_content(detection_prompt, generation_config={"response_mime_type": "application/json"})
-        goal_data = json.loads(detect_res.text)
+        detect_text = await asyncio.to_thread(
+            gemini_gateway.generate, "chat_goal", detection_prompt,
+            user_id=user_id, json_mode=True, max_output_tokens=512,
+        )
+        goal_data = json.loads(detect_text)
         print(f"[v0] Goal detection result: {goal_data}")
         
         if goal_data.get("is_goal"):
@@ -927,8 +915,11 @@ async def chat_with_history(query: dict):
                 If NOT allocating (setting up new goal, providing target, etc.), return: {{"is_confirming": false}}
                 Return ONLY JSON.
                 """
-                confirm_res = model.generate_content(confirm_prompt, generation_config={"response_mime_type": "application/json"})
-                confirm_data = json.loads(confirm_res.text)
+                confirm_text = await asyncio.to_thread(
+                    gemini_gateway.generate, "chat_goal", confirm_prompt,
+                    user_id=user_id, json_mode=True, max_output_tokens=512,
+                )
+                confirm_data = json.loads(confirm_text)
                 
                 if confirm_data.get("is_confirming") and confirm_data.get("allocations"):
                     updated_items = []
@@ -1015,8 +1006,11 @@ async def chat_with_history(query: dict):
                 If NOT updating (or if user wants to FUND/ALLOCATE), return: {{"is_update": false}}
                 Return ONLY JSON.
                 """
-                update_res = model.generate_content(update_prompt, generation_config={"response_mime_type": "application/json"})
-                update_data = json.loads(update_res.text)
+                update_text = await asyncio.to_thread(
+                    gemini_gateway.generate, "chat_goal", update_prompt,
+                    user_id=user_id, json_mode=True, max_output_tokens=512,
+                )
+                update_data = json.loads(update_text)
                 print(f"[v0] Goal update detection: {update_data}")
                 
                 if update_data.get("is_update"):
@@ -1287,9 +1281,13 @@ async def chat_with_history(query: dict):
 
         # Function calling + conversation state: a "yes" after Loamy offers to
         # categorize triggers get_uncategorized_transactions instead of a re-summary.
-        reply_text = await asyncio.to_thread(
-            generate_reply, model, advisor_prompt, user_id, user_msg
-        )
+        try:
+            reply_text = await asyncio.to_thread(
+                generate_reply, advisor_prompt, user_id, user_msg
+            )
+        except gemini_gateway.GeminiGatewayError as e:
+            print(f"[chat] advisor reply unavailable for {user_id}: {e}")
+            return {"reply": gemini_gateway.user_message(e), "invoice_created": False}
 
         # --- Handle CREATE_INVOICE marker (AI-driven invoice creation) ---
         # The AI emits a line like: * CREATE_INVOICE: Mr James | 15000 | 2026-08-05 | groceries
@@ -1514,8 +1512,9 @@ MANUAL_TRANSACTION_TOOL = {
 
 
 
-def extract_manual_transaction_calls(text: str) -> list:
-    """Ask Gemini whether the message logs spends; return one args dict per expense."""
+def extract_manual_transaction_calls(text: str, user_id: str = None) -> list:
+    """Ask Gemini (through the gateway) whether the message logs spends; return one args
+    dict per expense. Raises GeminiGatewayError when the call is refused or fails."""
     today = datetime.now()
     prompt = (
         f"Today is {today.strftime('%A, %Y-%m-%d')}. You route WhatsApp messages for Loamy, "
@@ -1537,18 +1536,14 @@ def extract_manual_transaction_calls(text: str) -> list:
         "Questions about spending, goals, invoices or anything else must NOT call the tool.\n\n"
         f"User message: {text}"
     )
-    response = model.generate_content(
-        prompt,
-        tools=[MANUAL_TRANSACTION_TOOL],
-        tool_config={"function_calling_config": {"mode": "AUTO"}},
+    response = gemini_gateway.generate_response(
+        "chat_expense", prompt, user_id=user_id,
+        tools=[MANUAL_TRANSACTION_TOOL], max_output_tokens=1024,
     )
-    calls = []
-    for candidate in response.candidates or []:
-        for part in candidate.content.parts or []:
-            call = getattr(part, "function_call", None)
-            if call and call.name == "add_manual_transaction":
-                calls.append({key: value for key, value in call.args.items()})
-    return calls
+    return [
+        call["args"] for call in gemini_gateway.function_calls(response)
+        if call["name"] == "add_manual_transaction"
+    ]
 
 
 
@@ -1652,7 +1647,7 @@ async def _log_manual_transactions(text: str, user_id: str):
     if corrected:
         return corrected
     try:
-        calls = await asyncio.to_thread(extract_manual_transaction_calls, text)
+        calls = await asyncio.to_thread(extract_manual_transaction_calls, text, user_id)
     except Exception as e:
         print(f"[chat] manual-entry function call failed: {e}")
         return None

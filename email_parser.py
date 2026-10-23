@@ -25,7 +25,6 @@ from business_logic import (
     true_up_conversion,
 )
 from models import (
-    model,
     gmail_data_collection,
     sync_state_collection,
     review_queue_collection,
