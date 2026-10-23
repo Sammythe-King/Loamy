@@ -24,6 +24,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Form, Background
 
 import database
 import categorizer
+import gemini_gateway
 import transfers
 import transfers as transfers_module
 import review_actions
@@ -154,6 +155,11 @@ async def root():
 async def options_handler(full_path: str):
     return {"status": "ok"}
 
+
+
+@router.get("/health/ai-usage")
+async def ai_usage_health():
+    return {"status": "success", "data": gemini_gateway.usage_snapshot(), "error": None}
 
 
 @router.get("/health/vector-store")
@@ -1447,28 +1453,20 @@ async def force_reparse_stored_email_data(user_id: str):
         return {"status": "error", "data": None, "error": str(e)}
 
 
-_SUGGESTION_CACHE: dict = {}
-
-
 def _attach_category_suggestions(items: list) -> None:
-    """Give each pending expense an AI-suggested category (cached per item so the
-    30s poll never re-asks the model)."""
-    todo = [it for it in items if it["id"] not in _SUGGESTION_CACHE]
-    if todo:
-        try:
-            results = categorizer.categorize_batch([
-                {"amount": it.get("amount"), "vendor": it.get("vendor"),
-                 "description": it.get("nudge", ""), "type": it.get("transaction_type") or "debit"}
-                for it in todo
-            ])
-            for it, res in zip(todo, results):
-                _SUGGESTION_CACHE[it["id"]] = (res or {}).get("category", categorizer.UNCATEGORIZED)
-        except Exception as e:
-            print(f"[REVIEW] suggestion error: {e}")
-            return
+    """Give each pending expense a suggested category without calling Gemini.
+
+    This runs on every review-queue poll, so it must stay free. Pending items are by
+    definition the ones categorization already could not place, so asking the model
+    again only repeated the same spend. Suggestions come from the vendor rules and the
+    in-process vendor cache."""
     for it in items:
-        suggestion = _SUGGESTION_CACHE.get(it["id"], "")
-        it["suggested_category"] = "" if suggestion == categorizer.UNCATEGORIZED else suggestion
+        it["suggested_category"] = categorizer.suggest_without_ai({
+            "amount": it.get("amount"),
+            "vendor": it.get("vendor"),
+            "description": it.get("vendor") or "",
+            "type": it.get("transaction_type") or "debit",
+        })
 
 
 @router.get("/review-queue/{user_id}")
@@ -2348,8 +2346,12 @@ async def get_onboarding_banks(country: str = ""):
 
         banks = []
         try:
-            resp = model.generate_content(prompt)
-            raw = (resp.text or "").strip()
+            raw = gemini_gateway.generate(
+                "onboarding_banks",
+                prompt,
+                temperature=0,
+                max_output_tokens=4096,
+            ).strip()
             # Strip accidental code fences.
             if raw.startswith("```"):
                 raw = raw.strip("`")
@@ -2369,11 +2371,14 @@ async def get_onboarding_banks(country: str = ""):
         except Exception as ai_err:
             print(f"[Onboarding] Bank AI/parse error for {country}: {ai_err}")
 
-        # Defensive fallback so the UI never breaks on an empty AI response.
+        # Defensive fallback so the UI never breaks on an empty AI response. The
+        # fallback is not cached, so a later request can try again once the gateway recovers.
         if not banks:
-            banks = [
-                {"name": "Other / Not listed", "sender_domains": []},
-            ]
+            return {
+                "status": "success",
+                "data": {"banks": [{"name": "Other / Not listed", "sender_domains": []}], "cached": False},
+                "error": None,
+            }
 
         _ONBOARDING_BANK_CACHE[key] = banks
         return {"status": "success", "data": {"banks": banks, "cached": False}, "error": None}

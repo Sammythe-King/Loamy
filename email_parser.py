@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 
 import database
 import categorizer
+import gemini_gateway
 from business_logic import (
     compute_bank_snapshot,
     load_ledger_transactions,
@@ -2107,8 +2108,13 @@ Email content:
 
 Respond with ONLY the JSON object, no markdown, no explanation."""
 
-        response = model.generate_content(prompt)
-        response_text = response.text.strip()
+        response_text = gemini_gateway.generate(
+            "email_extract",
+            prompt,
+            json_mode=True,
+            temperature=0,
+            max_output_tokens=1024,
+        ).strip()
         
         # Clean up response
         import json
@@ -2430,7 +2436,30 @@ async def _sync_gmail_data_core(data: dict):
 
 
 
-_AI_CATEGORIZE_PER_SYNC = 200
+_AI_CATEGORIZE_PER_SYNC = 100
+_CATEGORIZE_RETRY_DELAYS_SECONDS = (15 * 60, 60 * 60, 24 * 60 * 60)
+_CATEGORIZE_MAX_ATTEMPTS = len(_CATEGORIZE_RETRY_DELAYS_SECONDS)
+
+
+def _categorize_retry_due(email: dict) -> bool:
+    """False while a failed alert is still waiting out its backoff."""
+    return float(email.get("category_next_retry_at") or 0) <= datetime.now().timestamp()
+
+
+def _record_categorize_failure(email: dict) -> None:
+    """Back off after a failed Gemini call. After _CATEGORIZE_MAX_ATTEMPTS the alert is
+    settled as "Uncategorized" (source "gemini"), so it is never sent again and the
+    Review Queue is where the user resolves it."""
+    attempts = int(email.get("category_attempts") or 0) + 1
+    email["category_attempts"] = attempts
+    if attempts >= _CATEGORIZE_MAX_ATTEMPTS:
+        email["category"] = categorizer.UNCATEGORIZED
+        email["category_confidence"] = 0.0
+        email["category_source"] = "gemini"
+        email.pop("category_next_retry_at", None)
+        return
+    delay = _CATEGORIZE_RETRY_DELAYS_SECONDS[attempts - 1]
+    email["category_next_retry_at"] = datetime.now().timestamp() + delay
 
 
 def _ai_categorize_bank_alerts(emails: list) -> int:
@@ -2438,8 +2467,9 @@ def _ai_categorize_bank_alerts(emails: list) -> int:
 
     Runs inside the background sync pipeline. Capped per sync so a first-time
     backfill of thousands of alerts spreads across syncs instead of stalling
-    one. Low-confidence / failed results stay "Uncategorized" and are marked
-    as checked so they surface in the Review Queue instead of being retried."""
+    one. Low-confidence results stay "Uncategorized" and are marked as checked so
+    they surface in the Review Queue. Failed calls (network, quota, blocked by the
+    gateway) are not marked: they back off 15 min, 1 h, 24 h and then settle."""
     # Earlier syncs let Gemini file generic P2P/POS alerts as "Transfers & Cash".
     # Re-run the guardrails on those AI-assigned labels so they drop back into
     # the Review Queue. User-chosen categories (reviewed=True) are untouched.
@@ -2472,6 +2502,7 @@ def _ai_categorize_bank_alerts(emails: list) -> int:
         if e.get("is_bank_alert")
         and not e.get("category_source")
         and str(e.get("category") or "").strip().lower() in ("", "banking", "other", "uncategorized")
+        and _categorize_retry_due(e)
     ][:_AI_CATEGORIZE_PER_SYNC]
     if not targets:
         return demoted
@@ -2484,11 +2515,18 @@ def _ai_categorize_bank_alerts(emails: list) -> int:
     } for e in targets]
 
     results = categorizer.categorize_batch(items)
+    failed = 0
     for email, res in zip(targets, results):
+        if res.get("failed"):
+            _record_categorize_failure(email)
+            failed += 1
+            continue
         email["category"] = res["category"]
         email["category_confidence"] = res["confidence"]
         email["category_source"] = "gemini"
+        email.pop("category_attempts", None)
+        email.pop("category_next_retry_at", None)
     resolved = sum(1 for r in results if r["category"] != categorizer.UNCATEGORIZED)
-    print(f"[categorizer] {resolved}/{len(targets)} bank alerts categorized by Gemini")
+    print(f"[categorizer] {resolved}/{len(targets)} bank alerts categorized, {failed} deferred for retry")
     return len(targets) + demoted
 

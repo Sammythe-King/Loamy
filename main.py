@@ -237,8 +237,18 @@ except Exception as e:  # pragma: no cover - environment without apscheduler
 
 
 
+def _scheduler_enabled() -> bool:
+    """On by default. Set ENABLE_SCHEDULER=false on every instance except the one
+    production owner (local dev, previews, extra workers) so they stop running the
+    Gmail auto-sync and its Gemini calls against the same API key."""
+    return os.getenv("ENABLE_SCHEDULER", "true").strip().lower() not in ("false", "off", "0", "no")
+
+
 def _start_scheduler():
     """Start the background scheduler cleanly on app startup."""
+    if not _scheduler_enabled():
+        print("[Scheduler] Disabled by ENABLE_SCHEDULER; no background jobs will run on this instance.")
+        return
     if scheduler and not scheduler.running:
         scheduler.start()
         print(
