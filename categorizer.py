@@ -11,17 +11,9 @@ dashboard already treats as "needs review", so it lands in the Review Queue.
 """
 
 import json
-import os
 import re
-import threading
 
-import google.generativeai as genai
-
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except Exception:
-    pass
+import gemini_gateway
 
 STANDARD_CATEGORIES = [
     "Groceries",
@@ -194,23 +186,79 @@ def apply_guardrails(item: dict, result: dict) -> dict:
         return {"category": UNCATEGORIZED, "confidence": result.get("confidence", 0.0)}
     return result
 
-_model = None
-_model_lock = threading.Lock()
+
+# Deterministic vendor rules, checked before Gemini so common spend (fuel, airtime,
+# supermarkets, delivery apps) costs nothing. Order matters: the first matching
+# category wins, so "uber eats" is listed under Dining before "uber" under Transportation.
+_RULE_KEYWORDS = {
+    "Dining & Food": [
+        "uber eats", "bolt food", "chowdeck", "glovo", "jumia food", "domino", "chicken republic",
+        "kfc", "mr biggs", "sweet sensation", "tantalizers", "cold stone", "burger king",
+        "pizza hut", "starbucks", "restaurant",
+    ],
+    "Transportation": [
+        "fuel", "petrol", "diesel", "nnpc", "filling station", "uber", "bolt", "indrive", "rida",
+        "taxify", "total energies", "totalenergies", "oando", "conoil", "ardova", "air peace",
+        "arik", "ibom air", "bus fare", "toll",
+    ],
+    "Utilities & Bills": [
+        "dstv", "gotv", "startimes", "multichoice", "airtime", "data bundle", "electricity",
+        "ikedc", "ekedc", "aedc", "phed", "ibedc", "spectranet", "starlink", "prepaid meter",
+        "mtn", "airtel", "glo", "9mobile",
+    ],
+    "Groceries": [
+        "shoprite", "spar", "justrite", "maxcare", "carrefour", "ebeano", "supermarket", "groceries",
+    ],
+    "Entertainment & Subscriptions": [
+        "netflix", "spotify", "showmax", "prime video", "bet9ja", "sportybet", "betking",
+        "filmhouse", "silverbird", "genesis cinema",
+    ],
+}
+_RULE_RES = [(category, _vendor_re(words)) for category, words in _RULE_KEYWORDS.items()]
+
+
+def rule_category(item: dict):
+    """The category a plain-keyword rule gives this spend, or None. Credits never match."""
+    if (item.get("type") or "debit") == "credit":
+        return None
+    text = f"{item.get('vendor') or ''} {item.get('description') or ''}".lower()
+    for category, pattern in _RULE_RES:
+        if pattern.search(text):
+            return category
+    return None
+
+
+def _decided_without_ai(item: dict):
+    """The final result when Gemini cannot change the outcome, else None.
+
+    apply_guardrails already forces tech vendors to their category and forces any
+    ambiguous transfer without a known merchant to "Uncategorized" whatever Gemini
+    answered, so asking the model about those items only costs money."""
+    direct = apply_guardrails(item, {"category": UNCATEGORIZED, "confidence": 0.0})
+    if direct["category"] in TECH_CATEGORIES:
+        return direct
+    text = f"{item.get('vendor') or ''} {item.get('description') or ''}"
+    if is_ambiguous_transfer(text) and not has_known_merchant(text):
+        return {"category": UNCATEGORIZED, "confidence": 0.0}
+    rule = rule_category(item)
+    if rule:
+        return apply_guardrails(item, {"category": rule, "confidence": 0.95})
+    return None
+
+
+def suggest_without_ai(item: dict) -> str:
+    """A category suggestion that never calls Gemini: guardrails, rules, then the vendor
+    cache. Returns "" when there is nothing confident to suggest."""
+    decided = _decided_without_ai(item)
+    if decided and decided["category"] != UNCATEGORIZED:
+        return decided["category"]
+    cached = _cache.get(_cache_key(item))
+    return cached["category"] if cached else ""
+
+
 # Same vendor + direction almost always means the same category, so a repeat
 # (e.g. weekly "MAXCARE MART") never costs another Gemini call this process.
 _cache: dict = {}
-
-
-def _get_model():
-    global _model
-    with _model_lock:
-        if _model is None:
-            api_key = os.getenv("GEMINI_API_KEY")
-            if not api_key:
-                return None
-            genai.configure(api_key=api_key)
-            _model = genai.GenerativeModel("gemini-2.5-flash")
-        return _model
 
 
 def coerce_category(value) -> str:
@@ -273,24 +321,27 @@ Return ONLY a JSON array with one object per input, in the same order:
 
 
 def _categorize_chunk(items: list) -> list:
-    fallback = [{"category": UNCATEGORIZED, "confidence": 0.0} for _ in items]
-    model = _get_model()
-    if model is None:
-        return fallback
+    """Ask Gemini about one chunk. When the call cannot be answered (blocked, failed,
+    unreadable reply) every result carries failed=True, so callers can schedule a
+    delayed retry instead of treating the failure as a real "Uncategorized"."""
+    failed = [{"category": UNCATEGORIZED, "confidence": 0.0, "failed": True} for _ in items]
     try:
-        response = model.generate_content(
+        text = gemini_gateway.generate(
+            "categorize",
             _build_prompt(items),
-            generation_config={"response_mime_type": "application/json", "temperature": 0},
+            json_mode=True,
+            temperature=0,
+            max_output_tokens=2048,
         )
-        parsed = json.loads(response.text or "[]")
+        parsed = json.loads(text or "[]")
     except Exception as e:
         print(f"[categorizer] Gemini call failed: {e}")
-        return fallback
+        return failed
 
     if not isinstance(parsed, list):
-        return fallback
+        return failed
 
-    results = list(fallback)
+    results = [{"category": UNCATEGORIZED, "confidence": 0.0} for _ in items]
     for row in parsed:
         if not isinstance(row, dict):
             continue
@@ -313,13 +364,17 @@ def categorize_batch(items: list) -> list:
     """items: [{amount, vendor, description, type}] -> [{category, confidence}].
 
     Never raises. Errors, invalid labels and low confidence all resolve to
-    "Uncategorized" so the transaction is routed to the Review Queue."""
+    "Uncategorized" so the transaction is routed to the Review Queue. A result that
+    came from a failed or blocked Gemini call also carries failed=True.
+
+    Guardrails, vendor rules and the vendor cache answer first; Gemini is only asked
+    about what is left."""
     results = [None] * len(items)
     pending = []
     for i, item in enumerate(items):
-        direct = apply_guardrails(item, {"category": UNCATEGORIZED, "confidence": 0.0})
-        if direct["category"] in TECH_CATEGORIES:
-            results[i] = direct
+        decided = _decided_without_ai(item)
+        if decided is not None:
+            results[i] = decided
             continue
         cached = _cache.get(_cache_key(item))
         if cached:
@@ -330,8 +385,10 @@ def categorize_batch(items: list) -> list:
     for start in range(0, len(pending), BATCH_SIZE):
         chunk_idx = pending[start:start + BATCH_SIZE]
         chunk_results = _categorize_chunk([items[i] for i in chunk_idx])
-        for i, res in zip(chunk_idx, chunk_results):
-            res = apply_guardrails(items[i], res)
+        for i, raw in zip(chunk_idx, chunk_results):
+            res = apply_guardrails(items[i], raw)
+            if raw.get("failed"):
+                res = {**res, "failed": True}
             results[i] = res
             if res["category"] != UNCATEGORIZED:
                 _cache[_cache_key(items[i])] = res
@@ -384,8 +441,7 @@ def interpret_note(vendor, amount, tx_type, note) -> dict:
         }
     allowed = (NOTE_INCOME_CATEGORIES if is_credit else NOTE_EXPENSE_CATEGORIES) + [INTERNAL_TRANSFER]
     direction = "money received (credit)" if is_credit else "money spent (debit)"
-    model = _get_model()
-    if model is None:
+    if not gemini_gateway.is_configured():
         return {"category": None, "reply": "I can't read notes right now. Please try again in a moment.", "unrelated": False}
 
     prompt = f"""You are Loamy, a friendly money assistant for a Nigerian small-business owner.
@@ -415,11 +471,14 @@ Guidance:
 Return ONLY JSON: {{"category": "<allowed category or null>", "unrelated": false, "reply": "<one friendly sentence confirming what you logged, or the follow-up question>"}}"""
 
     try:
-        response = model.generate_content(
+        text = gemini_gateway.generate(
+            "interpret_note",
             prompt,
-            generation_config={"response_mime_type": "application/json", "temperature": 0.2},
+            json_mode=True,
+            temperature=0.2,
+            max_output_tokens=512,
         )
-        parsed = json.loads(response.text or "{}")
+        parsed = json.loads(text or "{}")
     except Exception as e:
         print(f"[categorizer] interpret_note failed: {e}")
         return {"category": None, "unrelated": False,
