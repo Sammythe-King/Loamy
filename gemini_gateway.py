@@ -1,8 +1,8 @@
 """
 gemini_gateway.py
-Single choke point for every Gemini generation call in the backend.
+Single choke point for every Gemini call in the backend, generation and embeddings.
 
-Every call made through generate() / generate_response() is:
+Every call made through generate() / generate_response() / embed_texts() is:
   - admitted against a global daily cap, a per-feature hourly cap, a per-user-per-feature
     hourly cap (GEMINI_USER_HOURLY_LIMIT) and a per-user total hourly cap, so a bug
     upstream or one abusive user can never turn into an unbounded bill;
@@ -36,6 +36,7 @@ except Exception:
     pass
 
 DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 REQUEST_TIMEOUT_MS = 30_000
 
 
@@ -60,6 +61,8 @@ FEATURE_HOURLY_LIMITS = {
     "chat_goal": 200,
     "chat_expense": 300,
     "receipt_vision": 100,
+    "embed_document": 300,
+    "embed_query": 400,
 }
 
 
@@ -438,6 +441,54 @@ def generate_response(
 def generate(feature: str, prompt, **kwargs) -> str:
     """Like generate_response() but returns the text ("" when the model returns none)."""
     return generate_response(feature, prompt, **kwargs).text or ""
+
+
+def embed_texts(
+    feature: str,
+    texts: list,
+    *,
+    user_id=None,
+    task_type: str = "RETRIEVAL_DOCUMENT",
+    dimensions: int = 768,
+    model: str = None,
+    max_attempts: int = 2,
+) -> list:
+    """Embed a batch of texts in one guarded request and return one vector per text.
+
+    One batch is one admission, so it counts once against the limits no matter how many
+    texts it holds. Raises GatewayBlocked when refused locally, GeminiCallFailed when the
+    API failed. Both subclass GeminiGatewayError."""
+    if not texts:
+        return []
+    client = _get_client()
+    if client is None:
+        raise GatewayBlocked("missing_api_key")
+
+    from google.genai import types
+
+    model = model or EMBEDDING_MODEL
+    config = types.EmbedContentConfig(task_type=task_type, output_dimensionality=dimensions)
+
+    last_error = None
+    for attempt in range(max(1, max_attempts)):
+        _admit(feature, user_id)
+        started = time.time()
+        try:
+            result = client.models.embed_content(model=model, contents=list(texts), config=config)
+        except Exception as e:
+            last_error = e
+            quota = _is_quota_error(e)
+            _record_failure(feature, quota)
+            _log_failed_call(feature, user_id, model, e, int((time.time() - started) * 1000))
+            print(f"[gemini] embed failed feature={feature} attempt={attempt + 1}: {e}")
+            if quota or attempt + 1 >= max_attempts or not _is_transient(e):
+                break
+            time.sleep(min(4.0, 0.8 * (2 ** attempt)) + random.uniform(0, 0.4))
+            continue
+        _record_success(feature, user_id, model, result, int((time.time() - started) * 1000))
+        return [list(e.values) for e in result.embeddings]
+
+    raise GeminiCallFailed(str(last_error))
 
 
 def function_calls(response) -> list:

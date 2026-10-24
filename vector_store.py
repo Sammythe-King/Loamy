@@ -15,9 +15,9 @@ Requires scripts/sql/004_vector_embeddings.sql to have been run in Supabase.
 """
 
 import os
-import time
 import uuid
 
+import gemini_gateway
 from database import supabase
 
 TABLE = "vector_embeddings"
@@ -41,68 +41,30 @@ SEMANTIC_COLLECTIONS = {
 # ============================================
 # Embeddings (Gemini API)
 # ============================================
-_genai_client = None
+def get_embeddings(texts: list[str], task_type: str = "RETRIEVAL_DOCUMENT",
+                   user_id: str | None = None) -> list[list[float]]:
+    """Embed many texts in one guarded round trip.
 
-
-def _api_key() -> str:
-    key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not key:
-        raise ValueError("Missing GEMINI_API_KEY for embeddings.")
-    return key
-
-
-def _embed_batch(texts: list[str], task_type: str) -> list[list[float]]:
-    global _genai_client
-    clipped = [(t or " ")[:MAX_EMBED_CHARS] for t in texts]
-
-    try:
-        from google import genai as google_genai
-        from google.genai import types as genai_types
-    except ImportError:
-        google_genai = None
-
-    if google_genai is not None:
-        if _genai_client is None:
-            _genai_client = google_genai.Client(api_key=_api_key())
-        result = _genai_client.models.embed_content(
-            model=EMBEDDING_MODEL,
-            contents=clipped,
-            config=genai_types.EmbedContentConfig(
-                task_type=task_type,
-                output_dimensionality=EMBEDDING_DIM,
-            ),
-        )
-        return [list(e.values) for e in result.embeddings]
-
-    # Fallback to the legacy SDK main.py already depends on.
-    import google.generativeai as legacy_genai
-
-    legacy_genai.configure(api_key=_api_key())
-    result = legacy_genai.embed_content(
-        model=f"models/{EMBEDDING_MODEL}",
-        content=clipped,
-        task_type=task_type.lower(),
-        output_dimensionality=EMBEDDING_DIM,
-    )
-    return [list(v) for v in result["embedding"]]
-
-
-def get_embeddings(texts: list[str], task_type: str = "RETRIEVAL_DOCUMENT") -> list[list[float]]:
-    """Embed many texts in one round trip, with a short retry for transient errors."""
+    Goes through gemini_gateway, so it respects the rate limits, circuit breaker and
+    usage logging. Raises a GeminiGatewayError subclass when blocked or failed; every
+    caller in this module already degrades on that."""
     if not texts:
         return []
-    last_error = None
-    for attempt in range(3):
-        try:
-            return _embed_batch(texts, task_type)
-        except Exception as e:
-            last_error = e
-            time.sleep(0.5 * (attempt + 1))
-    raise RuntimeError(f"Gemini embedding failed: {last_error}")
+    clipped = [(t or " ")[:MAX_EMBED_CHARS] for t in texts]
+    feature = "embed_query" if task_type == "RETRIEVAL_QUERY" else "embed_document"
+    return gemini_gateway.embed_texts(
+        feature,
+        clipped,
+        user_id=user_id,
+        task_type=task_type,
+        dimensions=EMBEDDING_DIM,
+        model=EMBEDDING_MODEL,
+    )
 
 
-def get_embedding(text: str, task_type: str = "RETRIEVAL_DOCUMENT") -> list[float]:
-    return get_embeddings([text], task_type)[0]
+def get_embedding(text: str, task_type: str = "RETRIEVAL_DOCUMENT",
+                  user_id: str | None = None) -> list[float]:
+    return get_embeddings([text], task_type, user_id=user_id)[0]
 
 
 def _to_pgvector(values: list[float]) -> str:
@@ -124,7 +86,7 @@ def add_vector(user_id: str, content: str, metadata: dict | None = None,
             "user_id": user_id,
             "content": content or "",
             "metadata": meta,
-            "embedding": _to_pgvector(get_embedding(content)),
+            "embedding": _to_pgvector(get_embedding(content, user_id=user_id)),
         }
         supabase.table(TABLE).upsert(row, on_conflict="collection,doc_id").execute()
         return {"status": "success", "data": {"doc_id": row["doc_id"]}, "error": None}
@@ -137,7 +99,7 @@ def search_vectors(user_id: str | None, query: str, limit: int = 5,
                    collection: str | None = None, threshold: float = 0.0) -> list[dict]:
     """Top-k cosine matches for query, scoped to user_id (and optionally a collection)."""
     try:
-        embedding = get_embedding(query, task_type="RETRIEVAL_QUERY")
+        embedding = get_embedding(query, task_type="RETRIEVAL_QUERY", user_id=user_id)
         res = supabase.rpc("match_documents", {
             "query_embedding": _to_pgvector(embedding),
             "match_threshold": threshold,
@@ -291,7 +253,9 @@ class SupabaseCollection:
             vectors = [list(e) for e in embeddings]
         elif self.semantic:
             try:
-                vectors = get_embeddings([d or "" for d in documents])
+                owner = next((m.get("user_id") for m in metadatas if m and m.get("user_id")), None)
+                vectors = get_embeddings([d or "" for d in documents],
+                                         user_id=str(owner) if owner else None)
             except Exception as e:
                 # Never lose a write because the embedding API hiccupped; the
                 # row is stored and simply won't appear in semantic search.
@@ -349,7 +313,9 @@ class SupabaseCollection:
                 patch["content"] = documents[i] or ""
                 if embeddings is None and self.semantic:
                     try:
-                        patch["embedding"] = _to_pgvector(get_embedding(patch["content"]))
+                        owner = (patch.get("user_id") or (current.get("metadata") or {}).get("user_id"))
+                        patch["embedding"] = _to_pgvector(get_embedding(
+                            patch["content"], user_id=str(owner) if owner else None))
                     except Exception as e:
                         print(f"[VectorStore] Re-embedding skipped for '{self.name}': {e}")
             if embeddings is not None:
